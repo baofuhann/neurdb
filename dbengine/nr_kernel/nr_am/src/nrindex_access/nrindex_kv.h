@@ -16,6 +16,7 @@
 #include "postgres.h"
 #include "access/relscan.h"
 #include "access/htup_details.h"
+#include "access/skey.h"
 #include "executor/tuptable.h"
 #include "access/xact.h"
 #include "storage/ipc.h"
@@ -126,8 +127,8 @@ typedef struct NRIndexScanDescData {
     IndexScanDescData xs_base;     /* Base scan descriptor */
     NRIndexKey min_key;            /* Minimum key for range scan */
     NRIndexKey max_key;            /* Maximum key for range scan */
-    NRIndexKey **results_key;      /* Array of result keys */
-    NRIndexValue **results;        /* Array of result values */
+    NRIndexKey *results_key;       /* Array of result keys */
+    NRIndexValue *results;         /* Array of result values */
     int result_count;              /* Number of results */
     int cursor;                    /* Current position in results */
     bool is_range_scan;            /* Whether this is a range scan */

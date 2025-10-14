@@ -29,7 +29,7 @@
 #include "nram_xact/xact.h"
 #include "nram_xact/action.h"
 
-PG_MODULE_MAGIC;
+// PG_MODULE_MAGIC;
 
 /* ------------------------------------------------------------------------
  * Global variables and structures
@@ -433,22 +433,4 @@ nrindex_handler(PG_FUNCTION_ARGS)
     amroutine->amparallelrescan = NULL;
     
     PG_RETURN_POINTER(amroutine);
-}
-
-/* ------------------------------------------------------------------------
- * Module initialization
- * ------------------------------------------------------------------------
- */
-
-void
-_PG_init(void)
-{
-    /* Initialize RocksDB service if not already done */
-    nram_rocks_service_init();
-}
-
-void
-_PG_fini(void)
-{
-    /* Cleanup if needed */
 }

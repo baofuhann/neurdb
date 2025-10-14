@@ -1,5 +1,6 @@
 #include "nram_storage/rocks_service.h"
 #include "nram_storage/thread.h"
+#include "nram_storage/indexengine.h"
 #include "nrindex_access/nrindex_kv.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
@@ -8,6 +9,7 @@ static BackgroundWorker worker;
 static KVChannel *channel = NULL;
 static volatile sig_atomic_t rocks_service_running = false;
 static ResultQueue result_queue;
+static IndexEngine *index_engine = NULL;
 
 /* ------------------------------------------------------------------------
  * Response thread-safe queue:
@@ -418,11 +420,11 @@ KVMsg *handle_kv_range_scan(KVMsg *msg) {
 KVMsg *handle_kv_index_get(KVMsg *msg) {
     Size key_len = msg->header.entitySize;
     NRIndexKey ikey = nrindex_key_deserialize((char *)msg->entity, key_len);
-    NRIndexValue ivalue = rocksengine_index_get(GetCurrentEngine(), ikey);
+    NRIndexValue ivalue = indexengine_get(index_engine, ikey);
     KVMsg *resp = NewMsg(kv_index_get, ikey->indexOid, kv_status_ok, msg->header.respChannel);
     Size val_len;
 
-    NRAM_TEST_INFO("[Rocks] handle_kv_index_get, key_len=%lu, indexOid=%u", key_len, ikey->indexOid);
+    NRAM_TEST_INFO("[IndexEngine] handle_kv_index_get, key_len=%lu, indexOid=%u", key_len, ikey->indexOid);
     Assert(key_len > 0 && msg->entity != NULL);
     
     if (ivalue) {
@@ -467,10 +469,10 @@ KVMsg *handle_kv_index_put(KVMsg *msg) {
     buf += key_len + sizeof(Size);
     ivalue = nrindex_value_deserialize(buf, value_len);
 
-    NRAM_TEST_INFO("[Rocks] handle_kv_index_put, key_len=%lu, val_len=%lu, indexOid=%u", 
+    NRAM_TEST_INFO("[IndexEngine] handle_kv_index_put, key_len=%lu, val_len=%lu, indexOid=%u", 
                    key_len, value_len, ikey->indexOid);
 
-    rocksengine_index_put(GetCurrentEngine(), ikey, ivalue);
+    indexengine_put(index_engine, ikey, ivalue);
 
     resp = NewMsg(kv_index_put, msg->header.relId, kv_status_ok, msg->header.respChannel);
     resp->header.op = kv_index_put;
@@ -487,9 +489,9 @@ KVMsg *handle_kv_index_delete(KVMsg *msg) {
     NRIndexKey ikey = nrindex_key_deserialize((char *)msg->entity, key_len);
     KVMsg *resp;
 
-    NRAM_TEST_INFO("[Rocks] handle_kv_index_delete, key_len=%lu, indexOid=%u", key_len, ikey->indexOid);
+    NRAM_TEST_INFO("[IndexEngine] handle_kv_index_delete, key_len=%lu, indexOid=%u", key_len, ikey->indexOid);
 
-    rocksengine_index_delete(GetCurrentEngine(), ikey);
+    indexengine_delete(index_engine, ikey);
 
     resp = NewMsg(kv_index_delete, msg->header.relId, kv_status_ok, msg->header.respChannel);
     resp->header.relId = ikey->indexOid;
@@ -520,11 +522,11 @@ KVMsg *handle_kv_index_range_scan(KVMsg *msg) {
     start_key = nrindex_key_deserialize(buf, key_len_1);
     end_key = nrindex_key_deserialize(buf + key_len_1, key_len_2);
 
-    NRAM_TEST_INFO("[Rocks] handle_kv_index_range_scan, [index %u - %u)",
+    NRAM_TEST_INFO("[IndexEngine] handle_kv_index_range_scan, [index %u - %u)",
                    start_key->indexOid, end_key->indexOid);
 
-    /* Query range from RocksDB */
-    rocksengine_index_range_scan(GetCurrentEngine(), start_key, end_key, &result_count, &keys, &results);
+    /* Query range from IndexEngine */
+    indexengine_range_scan(index_engine, start_key, end_key, &result_count, &keys, &results);
 
     total_len = sizeof(int);  // result_count
     for (int i = 0; i < result_count; i++) {
@@ -602,6 +604,12 @@ PGDLLEXPORT void rocks_service_main(Datum arg) {
 void nram_rocks_service_init(void) {
     memset(&worker, 0, sizeof(worker));
 
+    /* Initialize index engine */
+    if (index_engine == NULL) {
+        index_engine = indexengine_open();
+        elog(LOG, "[NRAM] IndexEngine initialized successfully");
+    }
+
     strncpy(worker.bgw_name, "Rocks Service", BGW_MAXLEN - 1);
     worker.bgw_name[BGW_MAXLEN - 1] = '\0';
     strncpy(worker.bgw_type, "CustomStorageWorker", BGW_MAXLEN - 1);
@@ -621,5 +629,11 @@ void nram_rocks_service_init(void) {
 }
 
 void nram_rocks_service_terminate(void) {
+    /* Cleanup index engine */
+    if (index_engine != NULL) {
+        indexengine_close(index_engine);
+        index_engine = NULL;
+        elog(LOG, "[NRAM] IndexEngine closed successfully");
+    }
     terminate_rocks(0);
 }
