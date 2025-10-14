@@ -1,5 +1,6 @@
 #include "nram_storage/rocks_service.h"
 #include "nram_storage/thread.h"
+#include "nrindex_access/nrindex_kv.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 
@@ -240,6 +241,18 @@ void *process_request(void *arg) {
         case kv_delete:
             NRAM_TEST_INFO("[Rocks] kv_delete not implemented");
             break;
+        case kv_index_get:
+            resp = handle_kv_index_get(msg);
+            break;
+        case kv_index_put:
+            resp = handle_kv_index_put(msg);
+            break;
+        case kv_index_delete:
+            resp = handle_kv_index_delete(msg);
+            break;
+        case kv_index_range_scan:
+            resp = handle_kv_index_range_scan(msg);
+            break;
         default:
             NRAM_TEST_INFO("[Rocks] Unknown op=%d", msg->header.op);
             break;
@@ -397,7 +410,168 @@ KVMsg *handle_kv_range_scan(KVMsg *msg) {
     return resp;
 }
 
+/* ------------------------------------------------------------------------
+ * Index operation handlers
+ * ------------------------------------------------------------------------
+ */
 
+KVMsg *handle_kv_index_get(KVMsg *msg) {
+    Size key_len = msg->header.entitySize;
+    NRIndexKey ikey = nrindex_key_deserialize((char *)msg->entity, key_len);
+    NRIndexValue ivalue = rocksengine_index_get(GetCurrentEngine(), ikey);
+    KVMsg *resp = NewMsg(kv_index_get, ikey->indexOid, kv_status_ok, msg->header.respChannel);
+    Size val_len;
+
+    NRAM_TEST_INFO("[Rocks] handle_kv_index_get, key_len=%lu, indexOid=%u", key_len, ikey->indexOid);
+    Assert(key_len > 0 && msg->entity != NULL);
+    
+    if (ivalue) {
+        resp->entity = nrindex_value_serialize(ivalue, &val_len);
+        resp->header.entitySize = val_len;
+        nrindex_value_free(ivalue);
+    } else {
+        resp->entity = NULL;
+        resp->header.entitySize = 0;
+    }
+    resp->header.relId = ikey->indexOid;
+
+    nrindex_key_free(ikey);
+    return resp;
+}
+
+KVMsg *handle_kv_index_put(KVMsg *msg) {
+    Size total_len = msg->header.entitySize, key_len, value_len;
+    char *buf = (char *)msg->entity;
+    NRIndexKey ikey;
+    NRIndexValue ivalue;
+    KVMsg *resp;
+
+    if (total_len < sizeof(Size)) {
+        NRAM_TEST_INFO("[Rocks] Invalid kv_index_put message: size too small");
+        return NULL;
+    }
+
+    /* Parse key length and value length */
+    memcpy(&key_len, buf, sizeof(Size));
+    buf += sizeof(Size);
+    
+    if (total_len < sizeof(Size) + key_len + sizeof(Size)) {
+        NRAM_TEST_INFO("[Rocks] Invalid kv_index_put message: insufficient data");
+        return NULL;
+    }
+    
+    memcpy(&value_len, buf + key_len, sizeof(Size));
+
+    /* Deserialize key and value */
+    ikey = nrindex_key_deserialize(buf, key_len);
+    buf += key_len + sizeof(Size);
+    ivalue = nrindex_value_deserialize(buf, value_len);
+
+    NRAM_TEST_INFO("[Rocks] handle_kv_index_put, key_len=%lu, val_len=%lu, indexOid=%u", 
+                   key_len, value_len, ikey->indexOid);
+
+    rocksengine_index_put(GetCurrentEngine(), ikey, ivalue);
+
+    resp = NewMsg(kv_index_put, msg->header.relId, kv_status_ok, msg->header.respChannel);
+    resp->header.op = kv_index_put;
+    resp->header.relId = ikey->indexOid;
+
+    nrindex_key_free(ikey);
+    nrindex_value_free(ivalue);
+
+    return resp;
+}
+
+KVMsg *handle_kv_index_delete(KVMsg *msg) {
+    Size key_len = msg->header.entitySize;
+    NRIndexKey ikey = nrindex_key_deserialize((char *)msg->entity, key_len);
+    KVMsg *resp;
+
+    NRAM_TEST_INFO("[Rocks] handle_kv_index_delete, key_len=%lu, indexOid=%u", key_len, ikey->indexOid);
+
+    rocksengine_index_delete(GetCurrentEngine(), ikey);
+
+    resp = NewMsg(kv_index_delete, msg->header.relId, kv_status_ok, msg->header.respChannel);
+    resp->header.relId = ikey->indexOid;
+
+    nrindex_key_free(ikey);
+    return resp;
+}
+
+KVMsg *handle_kv_index_range_scan(KVMsg *msg) {
+    Size key_len_1, key_len_2;
+    NRIndexKey start_key, end_key, *keys;
+    NRIndexValue *results;
+    uint32_t result_count;
+    char *write_ptr;
+    Size total_len;
+    KVMsg *resp;
+    char *buf = (char *)msg->entity;
+
+    Assert(msg->entity != NULL && msg->header.entitySize > 0);
+
+    /* Parse key lengths */
+    memcpy(&key_len_1, buf, sizeof(Size));
+    buf += sizeof(Size);
+    memcpy(&key_len_2, buf, sizeof(Size));
+    buf += sizeof(Size);
+
+    /* Deserialize keys */
+    start_key = nrindex_key_deserialize(buf, key_len_1);
+    end_key = nrindex_key_deserialize(buf + key_len_1, key_len_2);
+
+    NRAM_TEST_INFO("[Rocks] handle_kv_index_range_scan, [index %u - %u)",
+                   start_key->indexOid, end_key->indexOid);
+
+    /* Query range from RocksDB */
+    rocksengine_index_range_scan(GetCurrentEngine(), start_key, end_key, &result_count, &keys, &results);
+
+    total_len = sizeof(int);  // result_count
+    for (int i = 0; i < result_count; i++) {
+        Size klen, vlen;
+        char *kser = nrindex_key_serialize(keys[i], &klen);
+        char *vser = nrindex_value_serialize(results[i], &vlen);
+        total_len += sizeof(Size) + klen + sizeof(Size) + vlen;
+        pfree(kser);
+        pfree(vser);
+    }
+
+    resp = NewMsg(kv_index_range_scan, msg->header.relId, kv_status_ok, msg->header.respChannel);
+    resp->entity = palloc(total_len);
+    resp->header.entitySize = total_len;
+
+    /* Serialize results */
+    write_ptr = (char *)resp->entity;
+    memcpy(write_ptr, &result_count, sizeof(int));
+    write_ptr += sizeof(int);
+
+    for (int i = 0; i < result_count; i++) {
+        Size klen, vlen;
+        char *kser = nrindex_key_serialize(keys[i], &klen);
+        char *vser = nrindex_value_serialize(results[i], &vlen);
+
+        memcpy(write_ptr, &klen, sizeof(Size));
+        write_ptr += sizeof(Size);
+        memcpy(write_ptr, kser, klen);
+        write_ptr += klen;
+        memcpy(write_ptr, &vlen, sizeof(Size));
+        write_ptr += sizeof(Size);
+        memcpy(write_ptr, vser, vlen);
+        write_ptr += vlen;
+
+        pfree(kser);
+        pfree(vser);
+        nrindex_key_free(keys[i]);
+        nrindex_value_free(results[i]);
+    }
+
+    pfree(keys);
+    pfree(results);
+    nrindex_key_free(start_key);
+    nrindex_key_free(end_key);
+
+    return resp;
+}
 
 static void terminate_rocks(SIGNAL_ARGS) {
     int save_errno = errno;

@@ -18,3 +18,12 @@ CREATE OR REPLACE FUNCTION run_nram_tests()
 RETURNS void
 AS 'nram', 'run_nram_tests'
 LANGUAGE C STRICT;
+
+
+-- nrindex index access method
+CREATE FUNCTION nrindex_handler(internal)
+RETURNS index_am_handler
+AS 'nram', 'nrindex_handler'
+LANGUAGE C STRICT;
+
+CREATE ACCESS METHOD nrindex TYPE INDEX HANDLER nrindex_handler;

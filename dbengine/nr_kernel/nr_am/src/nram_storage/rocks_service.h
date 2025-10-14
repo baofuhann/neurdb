@@ -51,6 +51,12 @@ KVMsg *handle_kv_get(KVMsg *msg);
 KVMsg *handle_kv_put(KVMsg *msg);
 KVMsg *handle_kv_range_scan(KVMsg *msg);
 
+/* Index operation handlers */
+KVMsg *handle_kv_index_get(KVMsg *msg);
+KVMsg *handle_kv_index_put(KVMsg *msg);
+KVMsg *handle_kv_index_delete(KVMsg *msg);
+KVMsg *handle_kv_index_range_scan(KVMsg *msg);
+
 void nram_rocks_service_init(void);
 void nram_rocks_service_terminate(void);
 

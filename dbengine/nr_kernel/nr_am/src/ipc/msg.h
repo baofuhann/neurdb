@@ -60,7 +60,12 @@ typedef enum KVOp {
     kv_cursor_delete,
     kv_start,
     kv_stop,
-    kv_range
+    kv_range,
+    /* Index operations */
+    kv_index_put,
+    kv_index_get,
+    kv_index_delete,
+    kv_index_range_scan
 } KVOp;
 
 /* Status codes for KV responses */

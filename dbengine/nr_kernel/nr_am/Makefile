@@ -4,6 +4,8 @@ ENGINEPATH = /code/neurdb-dev/dbengine/
 MODULE_big = nram
 OBJS = \
 	${EXTPATH}/src/nram.o \
+	${EXTPATH}/src/nrindex.o \
+	${EXTPATH}/src/nrindex_access/nrindex_kv.o \
 	${EXTPATH}/src/nram_access/kv.o \
 	${EXTPATH}/src/nram_xact/xact.o \
 	${EXTPATH}/src/nram_xact/action.o \

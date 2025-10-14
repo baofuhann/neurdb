@@ -188,3 +188,190 @@ bool RocksClientRangeScan(NRAMKey start_key, NRAMKey end_key,
     }
     return success;
 }
+
+/* ------------------------------------------------------------------------
+ * Index operations
+ * ------------------------------------------------------------------------
+ */
+
+NRIndexValue RocksClientIndexGet(NRIndexKey ikey) {
+    KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
+    Size key_len;
+    char *serialized_key = nrindex_key_serialize(ikey, &key_len);
+    KVMsg *msg = NewMsg(kv_index_get, ikey->indexOid, kv_status_none, MyProcPid), *resp;
+    NRIndexValue result = NULL;
+
+    NRAM_INFO();
+
+    msg->header.entitySize = key_len;
+    msg->entity = serialized_key;
+
+    if (!KVChannelPushMsg(req_chan, msg, -1)) {
+        elog(WARNING, "RocksClientIndexGet: message pushing failed.");
+        return NULL;
+    }
+
+    resp = KVChannelPopMsg(resp_chan, -1);
+    if (resp && resp->header.status == kv_status_ok && resp->header.op == kv_index_get) {
+        if (resp->entity && resp->header.entitySize > 0) {
+            result = nrindex_value_deserialize(resp->entity, resp->header.entitySize);
+        }
+    } else {
+        elog(WARNING, "[NRAM] Rocks INDEX_GET failed");
+    }
+
+    pfree(serialized_key);
+    pfree(msg);
+    if (resp) {
+        if (resp->entity) pfree(resp->entity);
+        pfree(resp);
+    }
+    return result;
+}
+
+bool RocksClientIndexPut(NRIndexKey ikey, NRIndexValue ivalue) {
+    KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
+    Size key_len, val_len, total_len;
+    char *serialized_key = nrindex_key_serialize(ikey, &key_len);
+    char *serialized_val = nrindex_value_serialize(ivalue, &val_len);
+    KVMsg *msg = NewMsg(kv_index_put, ikey->indexOid, kv_status_none, MyProcPid), *resp;
+    bool success;
+
+    NRAM_INFO();
+
+    total_len = key_len + val_len + 2 * sizeof(Size);
+
+    msg->header.entitySize = total_len;
+    msg->entity = palloc(total_len);
+
+    char *ptr = msg->entity;
+    memcpy(ptr, &key_len, sizeof(Size));
+    ptr += sizeof(Size);
+    memcpy(ptr, serialized_key, key_len);
+    ptr += key_len;
+    memcpy(ptr, &val_len, sizeof(Size));
+    ptr += sizeof(Size);
+    memcpy(ptr, serialized_val, val_len);
+
+    if (!KVChannelPushMsg(req_chan, msg, -1)) {
+        elog(WARNING, "RocksClientIndexPut: message pushing failed.");
+        return false;
+    }
+
+    resp = KVChannelPopMsg(resp_chan, -1);
+    success = resp && resp->header.status == kv_status_ok && resp->header.op == kv_index_put;
+
+    if (!success) {
+        elog(WARNING, "[NRAM] Rocks INDEX_PUT failed");
+    }
+
+    pfree(serialized_key);
+    pfree(serialized_val);
+    pfree(msg->entity);
+    pfree(msg);
+    if (resp) {
+        pfree(resp);
+    }
+    return success;
+}
+
+bool RocksClientIndexDelete(NRIndexKey ikey) {
+    KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
+    Size key_len;
+    char *serialized_key = nrindex_key_serialize(ikey, &key_len);
+    KVMsg *msg = NewMsg(kv_index_delete, ikey->indexOid, kv_status_none, MyProcPid), *resp;
+    bool success;
+
+    NRAM_INFO();
+
+    msg->header.entitySize = key_len;
+    msg->entity = serialized_key;
+
+    if (!KVChannelPushMsg(req_chan, msg, -1)) {
+        elog(WARNING, "RocksClientIndexDelete: message pushing failed.");
+        return false;
+    }
+
+    resp = KVChannelPopMsg(resp_chan, -1);
+    success = resp && resp->header.status == kv_status_ok && resp->header.op == kv_index_delete;
+
+    if (!success) {
+        elog(WARNING, "[NRAM] Rocks INDEX_DELETE failed");
+    }
+
+    pfree(serialized_key);
+    pfree(msg);
+    if (resp) {
+        pfree(resp);
+    }
+    return success;
+}
+
+bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key, 
+                               NRIndexKey **out_keys, NRIndexValue **out_results, int *out_count) {
+    KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
+    Size start_len, end_len, total_len;
+    char *serialized_start = nrindex_key_serialize(start_key, &start_len);
+    char *serialized_end = nrindex_key_serialize(end_key, &end_len);
+    KVMsg *msg = NewMsg(kv_index_range_scan, start_key->indexOid, kv_status_none, MyProcPid), *resp;
+    bool success;
+    char *ptr;
+
+    NRAM_INFO();
+
+    total_len = start_len + end_len + 2 * sizeof(Size);
+
+    msg->header.entitySize = total_len;
+    msg->entity = palloc(total_len);
+
+    ptr = msg->entity;
+    memcpy(ptr, &start_len, sizeof(Size));
+    ptr += sizeof(Size);
+    memcpy(ptr, serialized_start, start_len);
+    ptr += start_len;
+    memcpy(ptr, &end_len, sizeof(Size));
+    ptr += sizeof(Size);
+    memcpy(ptr, serialized_end, end_len);
+
+    if (!KVChannelPushMsg(req_chan, msg, -1)) {
+        elog(WARNING, "RocksClientIndexRangeScan: message pushing failed.");
+        return false;
+    }
+
+    resp = KVChannelPopMsg(resp_chan, -1);
+    success = resp && resp->header.status == kv_status_ok && resp->header.op == kv_index_range_scan;
+
+    if (success) {
+        ptr = resp->entity;
+        memcpy(out_count, ptr, sizeof(int));
+        ptr += sizeof(int);
+
+        *out_keys = palloc(sizeof(NRIndexKey) * (*out_count));
+        *out_results = palloc(sizeof(NRIndexValue) * (*out_count));
+
+        for (int i = 0; i < *out_count; i++) {
+            Size klen, vlen;
+            memcpy(&klen, ptr, sizeof(Size));
+            ptr += sizeof(Size);
+            (*out_keys)[i] = nrindex_key_deserialize(ptr, klen);
+            ptr += klen;
+
+            memcpy(&vlen, ptr, sizeof(Size));
+            ptr += sizeof(Size);
+            (*out_results)[i] = nrindex_value_deserialize(ptr, vlen);
+            ptr += vlen;
+        }
+    } else {
+        elog(WARNING, "[NRAM] Rocks INDEX_RANGE_SCAN failed");
+    }
+
+    pfree(serialized_start);
+    pfree(serialized_end);
+    pfree(msg->entity);
+    pfree(msg);
+    if (resp) {
+        if (resp->entity) pfree(resp->entity);
+        pfree(resp);
+    }
+    return success;
+}
