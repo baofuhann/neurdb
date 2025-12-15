@@ -44,7 +44,7 @@ extern void TerminateChannel(KVChannel* channel);
  * ------------------------------------------------------------------------
  */
 
- #define MSG_SIZE 1024
+ #define MSG_SIZE 32768  /* Must be <= KV_CHANNEL_BUFSIZE to fit in channel */
 
 /* Operation codes for KV messages */
 typedef enum KVOp {

@@ -1,9 +1,12 @@
 /* -------------------------------------------------------------------------
  * indexengine.cpp
- * In-memory map-based index storage engine using C++ STL
+ * LIPP-based learned index storage engine
  *
- * This C++ implementation provides a simple in-memory index storage engine
- * using std::map for efficient key-value operations.
+ * This implementation uses LIPP (Learned Index with Precise Positions)
+ * for efficient key-value operations with learned index structure.
+ *
+ * IMPORTANT: LIPP uses union internally, so value type must be POD.
+ * We use uint64_t to store compressed heap_tid (BlockNumber + OffsetNumber).
  * -------------------------------------------------------------------------
  */
 
@@ -12,284 +15,375 @@ extern "C" {
 #include "nrindex_access/nrindex_kv.h"
 #include "utils/memutils.h"
 #include "postgres.h"
+#include "storage/itemptr.h"
 }
 
+#include "lipp/src/core/lipp.h"
 #include <map>
 #include <string>
 #include <vector>
-#include <algorithm>
 
-/* C++ IndexEngine class implementation using std::map */
-class IndexEngineImpl {
+/* -------------------------------------------------------------------------
+ * Key encoding/decoding for LIPP
+ *
+ * LIPP requires numeric keys. We encode int32 values as int64_t with
+ * sign bit flipping to ensure correct sort order:
+ *   - Negative numbers: sign bit 1 -> 0 (comes before positive)
+ *   - Positive numbers: sign bit 0 -> 1 (comes after negative)
+ * -------------------------------------------------------------------------
+ */
+
+/* Encode int32 value to int64_t key for LIPP */
+static inline int64_t encode_lipp_key(int32_t val) {
+    /* Flip sign bit: ensures -100 < 0 < 100 in lexicographic order */
+    return (int64_t)((uint32_t)val ^ 0x80000000);
+}
+
+/* Decode int64_t key back to int32 value */
+static inline int32_t decode_lipp_key(int64_t key) {
+    return (int32_t)((uint32_t)key ^ 0x80000000);
+}
+
+/* Extract int32 value from NRIndexKey */
+static inline int32_t extract_int_from_key(NRIndexKey ikey) {
+    if (ikey->key_size < 4) {
+        elog(ERROR, "LIPP: key_size too small (%u), expected >= 4", ikey->key_size);
+    }
+
+    /* Key data is stored in big-endian format with sign bit flipped.
+     * We need to decode it back to get the original int32 value. */
+    const unsigned char* buf = (const unsigned char*)ikey->key_data;
+    uint32_t encoded = ((uint32_t)buf[0] << 24) |
+                       ((uint32_t)buf[1] << 16) |
+                       ((uint32_t)buf[2] << 8) |
+                       ((uint32_t)buf[3]);
+
+    /* Flip sign bit back to get original value */
+    return (int32_t)(encoded ^ 0x80000000);
+}
+
+/* -------------------------------------------------------------------------
+ * Value encoding/decoding for LIPP
+ *
+ * We compress NRIndexValue into a uint64_t:
+ *   - High 32 bits: BlockNumber
+ *   - Low 16 bits: OffsetNumber
+ *   - Middle 16 bits: reserved (set to 0)
+ *
+ * Note: xact_id and flags are not stored (simplified for now)
+ * -------------------------------------------------------------------------
+ */
+
+/* Compress heap_tid into uint64_t */
+static inline uint64_t compress_heap_tid(ItemPointer tid) {
+    BlockNumber blk = ItemPointerGetBlockNumber(tid);
+    OffsetNumber off = ItemPointerGetOffsetNumber(tid);
+    return ((uint64_t)blk << 32) | (uint64_t)off;
+}
+
+/* Decompress uint64_t back to heap_tid */
+static inline void decompress_heap_tid(uint64_t compressed, ItemPointer tid) {
+    BlockNumber blk = (BlockNumber)(compressed >> 32);
+    OffsetNumber off = (OffsetNumber)(compressed & 0xFFFF);
+    ItemPointerSet(tid, blk, off);
+}
+
+/* -------------------------------------------------------------------------
+ * LIPP Index Engine Implementation
+ *
+ * Each index (identified by indexOid) has its own LIPP instance.
+ * This provides natural isolation between different indexes.
+ *
+ * LIPP<int64_t, uint64_t>:
+ *   - Key: encoded int value (with sign bit flip)
+ *   - Value: compressed heap_tid (POD type, safe in union)
+ * -------------------------------------------------------------------------
+ */
+
+class LIPPIndexEngine {
 private:
-    std::map<std::string, std::string> data_store;
-    
+    /* Map from indexOid to LIPP instance
+     * Using uint64_t as value type (POD, safe in LIPP's union) */
+    std::map<Oid, LIPP<int64_t, uint64_t>*> indexes;
+
 public:
-    IndexEngineImpl() {
-        // Simple in-memory map - no initialization needed
+    LIPPIndexEngine() {
+        elog(LOG, "LIPP IndexEngine created");
     }
-    
-    ~IndexEngineImpl() {
-        // Map destructor handles cleanup automatically
-        data_store.clear();
+
+    ~LIPPIndexEngine() {
+        /* Clean up all LIPP instances */
+        for (auto& pair : indexes) {
+            delete pair.second;
+        }
+        indexes.clear();
+        elog(LOG, "LIPP IndexEngine destroyed");
     }
-    
-    void put(const std::string& key, const std::string& value) {
-        data_store[key] = value;
+
+    /* Get or create LIPP instance for an index */
+    LIPP<int64_t, uint64_t>* getIndex(Oid indexOid) {
+        auto it = indexes.find(indexOid);
+        if (it == indexes.end()) {
+            /* Create new LIPP instance for this index */
+            LIPP<int64_t, uint64_t>* lipp = new LIPP<int64_t, uint64_t>();
+            indexes[indexOid] = lipp;
+            elog(LOG, "LIPP: Created new index instance for indexOid=%u", indexOid);
+            return lipp;
+        }
+        return it->second;
     }
-    
-    bool get(const std::string& key, std::string* value) {
-        auto it = data_store.find(key);
-        if (it != data_store.end()) {
-            *value = it->second;
+
+    /* Insert key-value pair */
+    void put(Oid indexOid, int32_t val, uint64_t compressed_tid) {
+        LIPP<int64_t, uint64_t>* lipp = getIndex(indexOid);
+        int64_t key = encode_lipp_key(val);
+
+        elog(NOTICE, "LIPP: calling lipp->insert(key=%ld, val=%d)", key, val);
+        lipp->insert(key, compressed_tid);
+        elog(NOTICE, "LIPP: insert done, indexOid=%u, val=%d, tid=%lu",
+             indexOid, val, compressed_tid);
+    }
+
+    /* Get value by key */
+    bool get(Oid indexOid, int32_t val, uint64_t* compressed_tid) {
+        auto it = indexes.find(indexOid);
+        if (it == indexes.end()) {
+            return false;
+        }
+
+        LIPP<int64_t, uint64_t>* lipp = it->second;
+        int64_t key = encode_lipp_key(val);
+
+        if (lipp->exists(key)) {
+            *compressed_tid = lipp->at(key);
+            elog(DEBUG1, "LIPP get: indexOid=%u, val=%d, found=true", indexOid, val);
             return true;
         }
+        elog(DEBUG1, "LIPP get: indexOid=%u, val=%d, found=false", indexOid, val);
         return false;
     }
-    
-    void remove(const std::string& key) {
-        data_store.erase(key);
-    }
-    
-    bool exists(const std::string& key) {
-        return data_store.find(key) != data_store.end();
-    }
-    
-    void rangeScan(const std::string& start_key, const std::string& end_key,
-                  std::vector<std::pair<std::string, std::string>>& results) {
-        // Find the starting position
-        auto it = data_store.lower_bound(start_key);
 
-        // Iterate until we pass the end key or end of map
-        // Use <= to include end_key (important for equality searches where start_key == end_key)
-        while (it != data_store.end() && it->first <= end_key) {
-            results.push_back(std::make_pair(it->first, it->second));
-            ++it;
+    /* Check if key exists */
+    bool exists(Oid indexOid, int32_t val) {
+        auto it = indexes.find(indexOid);
+        if (it == indexes.end()) {
+            return false;
         }
+
+        LIPP<int64_t, uint64_t>* lipp = it->second;
+        int64_t key = encode_lipp_key(val);
+        return lipp->exists(key);
     }
-    
-    void clearRange(const std::string& start_key, const std::string& end_key) {
-        auto it = data_store.lower_bound(start_key);
-        auto end_it = data_store.lower_bound(end_key);
-        data_store.erase(it, end_it);
-    }
-    
-    size_t size() const {
-        return data_store.size();
-    }
-    
-    void clear() {
-        data_store.clear();
+
+    /* Get count of entries for an index (approximate) */
+    size_t getCount(Oid indexOid) {
+        auto it = indexes.find(indexOid);
+        if (it == indexes.end()) {
+            return 0;
+        }
+        return it->second->index_size();
     }
 };
 
-/* Helper functions to convert between C and C++ types */
-static std::string serialize_index_key(NRIndexKey ikey) {
-    Size len;
-    char* buf = nrindex_key_serialize(ikey, &len);
-    std::string result(buf, len);
-    pfree(buf);
-    return result;
-}
+/* -------------------------------------------------------------------------
+ * C interface implementation
+ * -------------------------------------------------------------------------
+ */
 
-static std::string serialize_index_value(NRIndexValue ivalue) {
-    Size len;
-    char* buf = nrindex_value_serialize(ivalue, &len);
-    std::string result(buf, len);
-    pfree(buf);
-    return result;
-}
-
-static NRIndexKey deserialize_index_key(const std::string& data) {
-    return nrindex_key_deserialize(data.c_str(), data.size());
-}
-
-static NRIndexValue deserialize_index_value(const std::string& data) {
-    return nrindex_value_deserialize(data.c_str(), data.size());
-}
-
-/* C interface implementation */
 extern "C" {
 
 IndexEngine* indexengine_open(void) {
     try {
-        return reinterpret_cast<IndexEngine*>(new IndexEngineImpl());
+        return reinterpret_cast<IndexEngine*>(new LIPPIndexEngine());
     } catch (const std::exception& e) {
-        elog(ERROR, "Failed to create IndexEngine: %s", e.what());
+        elog(ERROR, "Failed to create LIPP IndexEngine: %s", e.what());
         return nullptr;
     }
 }
 
 void indexengine_close(IndexEngine* engine) {
     if (engine) {
-        delete reinterpret_cast<IndexEngineImpl*>(engine);
+        delete reinterpret_cast<LIPPIndexEngine*>(engine);
     }
 }
 
 void indexengine_put(IndexEngine* engine, NRIndexKey ikey, NRIndexValue ivalue) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         return;
     }
-    
+
     try {
-        IndexEngineImpl* impl = reinterpret_cast<IndexEngineImpl*>(engine);
-        std::string key = serialize_index_key(ikey);
-        std::string value = serialize_index_value(ivalue);
-        impl->put(key, value);
+        LIPPIndexEngine* impl = reinterpret_cast<LIPPIndexEngine*>(engine);
+
+        /* Extract indexOid and int value from key */
+        Oid indexOid = ikey->indexOid;
+        int32_t val = extract_int_from_key(ikey);
+
+        /* Compress heap_tid into uint64_t */
+        uint64_t compressed_tid = compress_heap_tid(&ivalue->heap_tid);
+
+        impl->put(indexOid, val, compressed_tid);
     } catch (const std::exception& e) {
-        elog(ERROR, "IndexEngine put failed: %s", e.what());
+        elog(ERROR, "LIPP IndexEngine put failed: %s", e.what());
     }
 }
 
 NRIndexValue indexengine_get(IndexEngine* engine, NRIndexKey ikey) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         return nullptr;
     }
-    
+
     try {
-        IndexEngineImpl* impl = reinterpret_cast<IndexEngineImpl*>(engine);
-        std::string key = serialize_index_key(ikey);
-        std::string value;
-        
-        if (impl->get(key, &value)) {
-            return deserialize_index_value(value);
-        } else {
-            return nullptr;
+        LIPPIndexEngine* impl = reinterpret_cast<LIPPIndexEngine*>(engine);
+
+        /* Extract indexOid and int value from key */
+        Oid indexOid = ikey->indexOid;
+        int32_t val = extract_int_from_key(ikey);
+
+        uint64_t compressed_tid;
+        if (impl->get(indexOid, val, &compressed_tid)) {
+            /* Allocate and populate NRIndexValue */
+            NRIndexValue ivalue = (NRIndexValue)palloc0(sizeof(NRIndexValueData));
+            decompress_heap_tid(compressed_tid, &ivalue->heap_tid);
+            ivalue->xact_id = InvalidTransactionId;  /* Not stored in LIPP */
+            ivalue->flags = 0;
+            return ivalue;
         }
+        return nullptr;
     } catch (const std::exception& e) {
-        elog(ERROR, "IndexEngine get failed: %s", e.what());
+        elog(ERROR, "LIPP IndexEngine get failed: %s", e.what());
         return nullptr;
     }
 }
 
 void indexengine_delete(IndexEngine* engine, NRIndexKey ikey) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         return;
     }
-    
-    try {
-        IndexEngineImpl* impl = reinterpret_cast<IndexEngineImpl*>(engine);
-        std::string key = serialize_index_key(ikey);
-        impl->remove(key);
-    } catch (const std::exception& e) {
-        elog(ERROR, "IndexEngine delete failed: %s", e.what());
-    }
+
+    /* LIPP does not support delete operation */
+    elog(WARNING, "LIPP IndexEngine: delete operation not supported, ignoring");
 }
 
-void indexengine_range_scan(IndexEngine* engine, 
-                           NRIndexKey start_key, 
+void indexengine_range_scan(IndexEngine* engine,
+                           NRIndexKey start_key,
                            NRIndexKey end_key,
-                           uint32_t* out_count, 
-                           NRIndexKey** keys, 
+                           uint32_t* out_count,
+                           NRIndexKey** keys,
                            NRIndexValue** values) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
-        *out_count = 0;
-        return;
-    }
-    
-    try {
-        IndexEngineImpl* impl = reinterpret_cast<IndexEngineImpl*>(engine);
-        std::string start_key_str = serialize_index_key(start_key);
-        std::string end_key_str = serialize_index_key(end_key);
-        
-        std::vector<std::pair<std::string, std::string>> results;
-        impl->rangeScan(start_key_str, end_key_str, results);
-        
-        *out_count = results.size();
-        
-        if (*out_count > 0) {
-            *keys = (NRIndexKey*)palloc(sizeof(NRIndexKey) * (*out_count));
-            *values = (NRIndexValue*)palloc(sizeof(NRIndexValue) * (*out_count));
-            
-            for (size_t i = 0; i < results.size(); i++) {
-                (*keys)[i] = deserialize_index_key(results[i].first);
-                (*values)[i] = deserialize_index_value(results[i].second);
-            }
-        } else {
-            *keys = nullptr;
-            *values = nullptr;
-        }
-    } catch (const std::exception& e) {
-        elog(ERROR, "IndexEngine range scan failed: %s", e.what());
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         *out_count = 0;
         *keys = nullptr;
         *values = nullptr;
+        return;
+    }
+
+    /* Initialize output */
+    *out_count = 0;
+    *keys = nullptr;
+    *values = nullptr;
+
+    /* Check if this is an equality query (start_key == end_key) */
+    if (start_key && end_key &&
+        start_key->indexOid == end_key->indexOid &&
+        start_key->key_size == end_key->key_size &&
+        memcmp(start_key->key_data, end_key->key_data, start_key->key_size) == 0) {
+
+        /* Equality query - use LIPP point lookup */
+        try {
+            LIPPIndexEngine* impl = reinterpret_cast<LIPPIndexEngine*>(engine);
+            Oid indexOid = start_key->indexOid;
+            int32_t val = extract_int_from_key(start_key);
+
+            uint64_t compressed_tid;
+            if (impl->get(indexOid, val, &compressed_tid)) {
+                /* Found! Return single result */
+                *out_count = 1;
+                *keys = (NRIndexKey*)palloc(sizeof(NRIndexKey));
+                *values = (NRIndexValue*)palloc(sizeof(NRIndexValue));
+
+                /* Copy the key */
+                (*keys)[0] = nrindex_key_copy(start_key);
+
+                /* Create value from compressed tid */
+                (*values)[0] = (NRIndexValue)palloc0(sizeof(NRIndexValueData));
+                decompress_heap_tid(compressed_tid, &(*values)[0]->heap_tid);
+                (*values)[0]->xact_id = InvalidTransactionId;
+                (*values)[0]->flags = 0;
+
+                elog(NOTICE, "LIPP: equality query found val=%d, tid=(%u,%u)",
+                     val,
+                     ItemPointerGetBlockNumber(&(*values)[0]->heap_tid),
+                     ItemPointerGetOffsetNumber(&(*values)[0]->heap_tid));
+            } else {
+                elog(NOTICE, "LIPP: equality query not found val=%d", val);
+            }
+        } catch (const std::exception& e) {
+            elog(ERROR, "LIPP IndexEngine range scan failed: %s", e.what());
+        }
+    } else {
+        /* True range query - not supported yet */
+        elog(WARNING, "LIPP IndexEngine: true range scan not supported yet");
     }
 }
 
 bool indexengine_exists(IndexEngine* engine, NRIndexKey ikey) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         return false;
     }
-    
+
     try {
-        IndexEngineImpl* impl = reinterpret_cast<IndexEngineImpl*>(engine);
-        std::string key = serialize_index_key(ikey);
-        return impl->exists(key);
+        LIPPIndexEngine* impl = reinterpret_cast<LIPPIndexEngine*>(engine);
+
+        /* Extract indexOid and int value from key */
+        Oid indexOid = ikey->indexOid;
+        int32_t val = extract_int_from_key(ikey);
+
+        return impl->exists(indexOid, val);
     } catch (const std::exception& e) {
-        elog(ERROR, "IndexEngine exists failed: %s", e.what());
+        elog(ERROR, "LIPP IndexEngine exists failed: %s", e.what());
         return false;
     }
 }
 
 void indexengine_clear_range(IndexEngine* engine, NRIndexKey start_key, NRIndexKey end_key) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         return;
     }
-    
-    try {
-        IndexEngineImpl* impl = reinterpret_cast<IndexEngineImpl*>(engine);
-        std::string start_key_str = serialize_index_key(start_key);
-        std::string end_key_str = serialize_index_key(end_key);
-        impl->clearRange(start_key_str, end_key_str);
-    } catch (const std::exception& e) {
-        elog(ERROR, "IndexEngine clear range failed: %s", e.what());
-    }
+
+    /* LIPP does not support range clear */
+    elog(WARNING, "LIPP IndexEngine: clear_range operation not supported, ignoring");
 }
 
 uint64_t indexengine_get_count(IndexEngine* engine, Oid indexOid) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         return 0;
     }
-    
+
     try {
-        IndexEngineImpl* impl = reinterpret_cast<IndexEngineImpl*>(engine);
-        
-        // Create min and max keys for this index
-        NRIndexKeyData min_key_data, max_key_data;
-        min_key_data.indexOid = indexOid;
-        min_key_data.key_size = 0;
-        max_key_data.indexOid = indexOid + 1;
-        max_key_data.key_size = 0;
-        
-        std::string start_key_str = serialize_index_key(&min_key_data);
-        std::string end_key_str = serialize_index_key(&max_key_data);
-        
-        std::vector<std::pair<std::string, std::string>> results;
-        impl->rangeScan(start_key_str, end_key_str, results);
-        
-        return results.size();
+        LIPPIndexEngine* impl = reinterpret_cast<LIPPIndexEngine*>(engine);
+        return impl->getCount(indexOid);
     } catch (const std::exception& e) {
-        elog(ERROR, "IndexEngine get count failed: %s", e.what());
+        elog(ERROR, "LIPP IndexEngine get count failed: %s", e.what());
         return 0;
     }
 }
 
 void indexengine_compact(IndexEngine* engine) {
     if (!engine) {
-        elog(ERROR, "IndexEngine: null engine pointer");
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
         return;
     }
-    
-    // No-op for in-memory map implementation
-    // In a real implementation, this could trigger memory optimization
+
+    /* No-op for LIPP - it's an in-memory structure */
+    elog(DEBUG1, "LIPP IndexEngine: compact is no-op for in-memory index");
 }
 
 } // extern "C"

@@ -16,6 +16,70 @@
 #include "utils/memutils.h"
 
 /* ------------------------------------------------------------------------
+ * Big-endian encoding helpers for sortable key serialization
+ * These ensure integer keys are properly ordered when compared lexicographically
+ * ------------------------------------------------------------------------
+ */
+
+static inline void encode_uint32_be(char *buf, uint32 val)
+{
+    buf[0] = (val >> 24) & 0xFF;
+    buf[1] = (val >> 16) & 0xFF;
+    buf[2] = (val >> 8) & 0xFF;
+    buf[3] = val & 0xFF;
+}
+
+static inline uint32 decode_uint32_be(const char *buf)
+{
+    return ((uint32)(unsigned char)buf[0] << 24) |
+           ((uint32)(unsigned char)buf[1] << 16) |
+           ((uint32)(unsigned char)buf[2] << 8) |
+           ((uint32)(unsigned char)buf[3]);
+}
+
+static inline void encode_int32_be(char *buf, int32 val)
+{
+    /* For signed integers, flip the sign bit to maintain sort order:
+     * - Negative numbers (sign bit = 1) should come before positive (sign bit = 0)
+     * - After flipping: negative becomes 0..., positive becomes 1...
+     * This makes lexicographic order match numeric order */
+    uint32 uval = (uint32)val ^ 0x80000000;
+    encode_uint32_be(buf, uval);
+}
+
+static inline int32 decode_int32_be(const char *buf)
+{
+    uint32 uval = decode_uint32_be(buf);
+    return (int32)(uval ^ 0x80000000);
+}
+
+static inline void encode_int64_be(char *buf, int64 val)
+{
+    uint64 uval = (uint64)val ^ 0x8000000000000000ULL;
+    buf[0] = (uval >> 56) & 0xFF;
+    buf[1] = (uval >> 48) & 0xFF;
+    buf[2] = (uval >> 40) & 0xFF;
+    buf[3] = (uval >> 32) & 0xFF;
+    buf[4] = (uval >> 24) & 0xFF;
+    buf[5] = (uval >> 16) & 0xFF;
+    buf[6] = (uval >> 8) & 0xFF;
+    buf[7] = uval & 0xFF;
+}
+
+static inline int64 decode_int64_be(const char *buf)
+{
+    uint64 uval = ((uint64)(unsigned char)buf[0] << 56) |
+                  ((uint64)(unsigned char)buf[1] << 48) |
+                  ((uint64)(unsigned char)buf[2] << 40) |
+                  ((uint64)(unsigned char)buf[3] << 32) |
+                  ((uint64)(unsigned char)buf[4] << 24) |
+                  ((uint64)(unsigned char)buf[5] << 16) |
+                  ((uint64)(unsigned char)buf[6] << 8) |
+                  ((uint64)(unsigned char)buf[7]);
+    return (int64)(uval ^ 0x8000000000000000ULL);
+}
+
+/* ------------------------------------------------------------------------
  * Index key implementation
  * ------------------------------------------------------------------------
  */
@@ -27,19 +91,37 @@ nrindex_key_create(Oid indexOid, Datum *values, bool *isnull, int nkeys, TupleDe
     Size total_size;
     char *pos;
     Size *lens;
+    int i;
 
     elog(DEBUG1, "nrindex_key_create: indexOid=%u, nkeys=%d", indexOid, nkeys);
 
-    /* Calculate total size needed */
+    /* Calculate total size needed - use fixed sizes for known types */
     total_size = offsetof(NRIndexKeyData, key_data);
     lens = palloc(sizeof(Size) * nkeys);
 
-    for (int i = 0; i < nkeys; i++) {
+    for (i = 0; i < nkeys; i++) {
         if (!isnull[i]) {
             Form_pg_attribute attr = TupleDescAttr(indexTupDesc, i);
-            lens[i] = datumEstimateSpace(values[i], false, attr->attbyval, attr->attlen);
+            Oid typid = attr->atttypid;
+
+            /* Use fixed sizes for sortable encoding of common types */
+            switch (typid) {
+                case INT2OID:
+                    lens[i] = 4;  /* Encode as int32 for simplicity */
+                    break;
+                case INT4OID:
+                    lens[i] = 4;
+                    break;
+                case INT8OID:
+                    lens[i] = 8;
+                    break;
+                default:
+                    /* For other types, use PostgreSQL's estimation */
+                    lens[i] = datumEstimateSpace(values[i], false, attr->attbyval, attr->attlen);
+                    break;
+            }
             total_size += lens[i];
-            elog(DEBUG1, "  Key[%d]: type=%u, len=%zu, isnull=false", i, attr->atttypid, lens[i]);
+            elog(DEBUG1, "  Key[%d]: type=%u, len=%zu, isnull=false", i, typid, lens[i]);
         } else {
             lens[i] = 0;
             elog(DEBUG1, "  Key[%d]: isnull=true", i);
@@ -53,12 +135,32 @@ nrindex_key_create(Oid indexOid, Datum *values, bool *isnull, int nkeys, TupleDe
 
     elog(DEBUG1, "  Total key_size=%u, total_struct_size=%zu", ikey->key_size, total_size);
 
-    /* Serialize key values */
+    /* Serialize key values using big-endian for sortable ordering */
     pos = ikey->key_data;
-    for (int i = 0; i < nkeys; i++) {
+    for (i = 0; i < nkeys; i++) {
         if (!isnull[i]) {
             Form_pg_attribute attr = TupleDescAttr(indexTupDesc, i);
-            datumSerialize(values[i], false, attr->attbyval, attr->attlen, &pos);
+            Oid typid = attr->atttypid;
+
+            switch (typid) {
+                case INT2OID:
+                    /* Encode int16 as int32 in big-endian */
+                    encode_int32_be(pos, (int32)DatumGetInt16(values[i]));
+                    pos += 4;
+                    break;
+                case INT4OID:
+                    encode_int32_be(pos, DatumGetInt32(values[i]));
+                    pos += 4;
+                    break;
+                case INT8OID:
+                    encode_int64_be(pos, DatumGetInt64(values[i]));
+                    pos += 8;
+                    break;
+                default:
+                    /* For other types, use PostgreSQL's serialization */
+                    datumSerialize(values[i], false, attr->attbyval, attr->attlen, &pos);
+                    break;
+            }
         }
     }
 
@@ -70,14 +172,16 @@ char *
 nrindex_key_serialize(NRIndexKey ikey, Size *out_len)
 {
     char *buf;
-    
+
     *out_len = sizeof(Oid) + sizeof(uint32) + ikey->key_size;
     buf = palloc0(*out_len);
-    
-    memcpy(buf, &ikey->indexOid, sizeof(Oid));
-    memcpy(buf + sizeof(Oid), &ikey->key_size, sizeof(uint32));
+
+    /* Use big-endian encoding for indexOid to ensure proper sort order across indexes */
+    encode_uint32_be(buf, ikey->indexOid);
+    encode_uint32_be(buf + sizeof(Oid), ikey->key_size);
+    /* key_data is already encoded in big-endian in nrindex_key_create */
     memcpy(buf + sizeof(Oid) + sizeof(uint32), ikey->key_data, ikey->key_size);
-    
+
     return buf;
 }
 
@@ -86,22 +190,24 @@ nrindex_key_deserialize(const char *buf, Size len)
 {
     NRIndexKey ikey;
     uint32 key_size;
-    
+
     if (len < sizeof(Oid) + sizeof(uint32)) {
         elog(ERROR, "nrindex_key_deserialize: buffer too small");
     }
-    
-    key_size = *(uint32*)(buf + sizeof(Oid));
-    
+
+    /* Decode big-endian values */
+    key_size = decode_uint32_be(buf + sizeof(Oid));
+
     if (len != sizeof(Oid) + sizeof(uint32) + key_size) {
         elog(ERROR, "nrindex_key_deserialize: buffer size mismatch");
     }
-    
+
     ikey = (NRIndexKey)palloc0(offsetof(NRIndexKeyData, key_data) + key_size);
-    memcpy(&ikey->indexOid, buf, sizeof(Oid));
+    ikey->indexOid = decode_uint32_be(buf);
     ikey->key_size = key_size;
+    /* key_data remains in big-endian format for comparison purposes */
     memcpy(ikey->key_data, buf + sizeof(Oid) + sizeof(uint32), key_size);
-    
+
     return ikey;
 }
 

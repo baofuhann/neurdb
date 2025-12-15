@@ -133,7 +133,7 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
              (int)sizeof(NRIndexValueData));
 
         /* Store in RocksDB */
-        /*使用新的 RocksDB 存储函数将索引条目存入 RocksDB*/
+        /*存储函数将索引条目存入 RocksDB*/
         if (!nrindex_rocks_put(ikey, ivalue)) {
             elog(ERROR, "Failed to insert index entry during build");
         }
@@ -205,8 +205,6 @@ nrindex_insert(Relation index, Datum *values, bool *isnull,
     }
 
     if (result) {
-        /* Store in RocksDB */
-        elog(NOTICE, "Storing in RocksDB...");
         if (!nrindex_rocks_put(ikey, ivalue)) {
             elog(ERROR, "Failed to insert index entry");
         }

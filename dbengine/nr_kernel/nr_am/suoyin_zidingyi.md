@@ -1684,3 +1684,555 @@ public:
 **你只需要实现一个能够存储 `(索引键 → heap_tid)` 映射并支持范围查询的学习索引结构。**
 
 其他所有组件（PostgreSQL 接口、IPC 通信、消息序列化等）都可以直接复用现有代码。
+
+---
+
+## 十三、SELECT 查询实际执行示例
+
+### 13.1 测试场景
+
+```sql
+-- 创建表并插入数据
+CREATE TABLE test_idx (id INT, val INT) USING nram;
+INSERT INTO test_idx SELECT i, i * 10 FROM generate_series(1, 100) AS i;
+
+-- 创建索引
+CREATE INDEX test_idx_val ON test_idx USING nrindex (val);
+
+-- 强制使用索引扫描
+SET enable_seqscan = off;
+
+-- 执行查询
+SELECT * FROM test_idx WHERE val = 500;
+```
+
+### 13.2 完整调试输出
+
+```
+NOTICE:  ========== NRINDEX BEGINSCAN ==========
+NOTICE:  Index: test_idx_val (OID: 32914)
+NOTICE:  Number of scan keys: 1
+NOTICE:  Number of order by keys: 0
+NOTICE:  Scan descriptor initialized
+NOTICE:  ========== NRINDEX RESCAN ==========
+NOTICE:  Number of scan keys: 1
+NOTICE:    ScanKey[0]:
+NOTICE:      sk_attno = 1 (which column)
+NOTICE:      sk_strategy = 3 (1:<, 2:<=, 3:=, 4:>=, 5:>)
+NOTICE:      sk_flags = 0
+NOTICE:      sk_argument = 500 (search value)
+NOTICE:  Building search key: indexOid=32914, nscankeys=1
+NOTICE:  Strategy: EQUAL (=)
+NOTICE:  Calling nrindex_rocks_range_scan: min_key=SET, max_key=SET
+NOTICE:  Range scan result_count = 1
+NOTICE:  ========== NRINDEX RESCAN END ==========
+NOTICE:  ========== NRINDEX ENDSCAN ==========
+NOTICE:  Ending index scan, cleaning up resources
+NOTICE:    result_count = 1
+NOTICE:    Freeing 1 result key-value pairs
+NOTICE:    Freeing min_key
+NOTICE:    Freeing max_key
+NOTICE:  ========== NRINDEX ENDSCAN DONE ==========
+ id | val
+----+-----
+ 50 | 500
+(1 row)
+```
+
+### 13.3 执行流程详解
+
+```
+SQL: SELECT * FROM test_idx WHERE val = 500;
+                    ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  1. NRINDEX BEGINSCAN - 初始化扫描                               │
+├─────────────────────────────────────────────────────────────────┤
+│  Index: test_idx_val (OID: 32914)                               │
+│  - 确定使用哪个索引                                              │
+│  - 分配扫描描述符 (NRIndexScanDesc)                             │
+│  - 记录扫描键数量: 1 (WHERE val = 500 是一个条件)                │
+└─────────────────────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  2. NRINDEX RESCAN - 设置扫描条件并执行查询                      │
+├─────────────────────────────────────────────────────────────────┤
+│  ScanKey[0]:                                                    │
+│    sk_attno = 1      → 索引的第1列 (val)                        │
+│    sk_strategy = 3   → 等于操作符 (=)                           │
+│    sk_argument = 500 → 查询值                                   │
+│                                                                 │
+│  构建搜索 key:                                                   │
+│    indexOid = 32914                                             │
+│    key_data = serialize(500)                                    │
+│                                                                 │
+│  Strategy: EQUAL (=)                                            │
+│    → min_key = max_key = {32914, serialize(500)}                │
+│                                                                 │
+│  调用 RocksDB 范围扫描:                                          │
+│    nrindex_rocks_range_scan(min_key, max_key)                   │
+│         ↓ IPC                                                   │
+│    Rocks Service: indexengine_range_scan()                      │
+│         ↓                                                       │
+│    std::map.find(key) → 找到匹配项!                             │
+│         ↓                                                       │
+│  result_count = 1  ← 找到 1 条匹配记录                          │
+└─────────────────────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  3. PostgreSQL Executor - 获取堆表数据                          │
+├─────────────────────────────────────────────────────────────────┤
+│  从索引结果获取 heap_tid (ctid)                                  │
+│         ↓                                                       │
+│  根据 ctid 从堆表读取完整行数据                                  │
+│         ↓                                                       │
+│  返回: id=50, val=500                                           │
+└─────────────────────────────────────────────────────────────────┘
+                    ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  4. NRINDEX ENDSCAN - 清理资源                                   │
+├─────────────────────────────────────────────────────────────────┤
+│  result_count = 1                                               │
+│  - 释放 1 个 key-value 对                                       │
+│  - 释放 min_key                                                 │
+│  - 释放 max_key                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                    ↓
+            输出: id=50, val=500
+```
+
+### 13.4 关键数据流
+
+```
+WHERE val = 500
+       ↓
+┌──────────────────┐
+│    ScanKey       │
+│  sk_argument=500 │
+└────────┬─────────┘
+         ↓ nrindex_key_create()
+┌──────────────────┐
+│   NRIndexKey     │
+│  indexOid=32914  │
+│  key_data=[500]  │
+└────────┬─────────┘
+         ↓ IPC to Rocks Service
+┌──────────────────┐
+│   std::map       │
+│  key → value     │
+│  [500] → ctid    │
+└────────┬─────────┘
+         ↓ 找到匹配
+┌──────────────────┐
+│  NRIndexValue    │
+│  heap_tid=(0,50) │
+└────────┬─────────┘
+         ↓ 访问堆表
+┌──────────────────┐
+│   Heap Table     │
+│  ctid=(0,50)     │
+│  → id=50,val=500 │
+└──────────────────┘
+```
+
+### 13.5 为什么返回 id=50, val=500？
+
+```sql
+INSERT INTO test_idx SELECT i, i * 10 FROM generate_series(1, 100) AS i;
+```
+
+| i (id) | i * 10 (val) |
+|--------|--------------|
+| 1      | 10           |
+| 2      | 20           |
+| ...    | ...          |
+| **50** | **500**      |
+| ...    | ...          |
+| 100    | 1000         |
+
+所以 `val = 500` 对应 `id = 50`。
+
+### 13.6 索引查询 vs 顺序扫描
+
+| 方式 | 操作 | 复杂度 |
+|------|------|--------|
+| 顺序扫描 | 遍历所有 100 行，逐一比较 | O(n) |
+| **索引扫描** | 直接在 std::map 中查找 key | **O(log n)** |
+
+### 13.7 ScanKey 字段详解
+
+`ScanKey` 是 PostgreSQL 传给索引的查询条件结构：
+
+```c
+typedef struct ScanKeyData {
+    AttrNumber  sk_attno;      // 索引的第几列（从1开始）
+    StrategyNumber sk_strategy; // 操作符策略号
+    Oid         sk_subtype;    // 操作数类型
+    Datum       sk_argument;   // 查询值
+    int         sk_flags;      // 标志位（如 SK_ISNULL）
+} ScanKeyData;
+```
+
+**策略号对应关系**：
+
+| sk_strategy | 操作符 | 含义 |
+|-------------|--------|------|
+| 1 | < | 小于 |
+| 2 | <= | 小于等于 |
+| 3 | = | 等于 |
+| 4 | >= | 大于等于 |
+| 5 | > | 大于 |
+
+### 13.8 nrindex_rescan 核心逻辑
+
+```c
+static void nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys, ...) {
+    // 1. 从 scankey 提取查询值
+    Datum *values = palloc(sizeof(Datum) * nscankeys);
+    for (int i = 0; i < nscankeys; i++) {
+        values[i] = scankey[i].sk_argument;  // 如 500
+    }
+
+    // 2. 根据操作符类型构建 key
+    switch (scankey[0].sk_strategy) {
+        case BTEqualStrategyNumber:  // = 等值查询
+            min_key = max_key = nrindex_key_create(..., values, ...);
+            break;
+        case BTLessStrategyNumber:      // <
+        case BTLessEqualStrategyNumber: // <=
+            min_key = NULL;
+            max_key = nrindex_key_create(..., values, ...);
+            break;
+        case BTGreaterStrategyNumber:      // >
+        case BTGreaterEqualStrategyNumber: // >=
+            min_key = nrindex_key_create(..., values, ...);
+            max_key = NULL;
+            break;
+    }
+
+    // 3. 调用 RocksDB 范围扫描
+    nrindex_rocks_range_scan(min_key, max_key, &results, &result_count);
+}
+```
+
+### 13.9 等值查询的特殊处理
+
+对于 `WHERE val = 500`：
+- `sk_strategy = 3` (BTEqualStrategyNumber)
+- `min_key = max_key = 构建的key`
+
+这样在 `indexengine_range_scan` 中：
+```cpp
+while (it != data_store.end() && it->first <= end_key) {
+    // 因为 start_key == end_key == "500"
+    // 只会匹配到精确等于 "500" 的键
+    results.push_back(*it);
+    ++it;
+}
+```
+
+### 13.10 完整函数调用链
+
+```
+SELECT * FROM test_idx WHERE val = 500;
+    │
+    ├─► PostgreSQL Parser & Planner
+    │       └── 决定使用 Index Scan on test_idx_val
+    │
+    ├─► index_beginscan()
+    │       └── nrindex_beginscan()          [nrindex.c]
+    │               └── 分配 NRIndexScanDesc
+    │
+    ├─► index_rescan()
+    │       └── nrindex_rescan()             [nrindex.c]
+    │               ├── 解析 ScanKey: val = 500
+    │               ├── nrindex_key_create() [nrindex_kv.c]
+    │               │       └── 创建 NRIndexKey{indexOid=32914, key_data=[500]}
+    │               │
+    │               └── nrindex_rocks_range_scan() [nrindex_kv.c]
+    │                       └── RocksClientIndexRangeScan() [rocks_handler.c]
+    │                               ├── 序列化 key
+    │                               ├── KVChannelPushMsg() → 共享内存
+    │                               └── KVChannelPopMsg() ← 等待响应
+    │                                           │
+    │               ════════════════════════════╪════════════════════════════
+    │                                           ▼
+    │                               Rocks Service Process
+    │                               handle_kv_index_range_scan() [rocks_service.c]
+    │                                   └── indexengine_range_scan() [indexengine.cpp]
+    │                                           └── std::map.lower_bound()
+    │                                                   │
+    │                                                   └── 找到: key=[500] → heap_tid=(0,50)
+    │                                                           │
+    │               ════════════════════════════════════════════╪═════════════
+    │                                                           │
+    │               result_count = 1, results[0] = {heap_tid=(0,50)}
+    │
+    ├─► index_gettuple() (循环)
+    │       └── nrindex_gettuple()           [nrindex.c]
+    │               ├── ivalue = results[cursor]
+    │               ├── scan->xs_heaptid = ivalue->heap_tid  // (0,50)
+    │               └── return true
+    │
+    ├─► ExecIndexScan()
+    │       └── heap_fetch(heap, xs_heaptid)
+    │               └── 读取 Block=0, Offset=50 的行
+    │                       └── 返回: {id=50, val=500}
+    │
+    └─► 返回结果
+            +----+-----+
+            | id | val |
+            +----+-----+
+            | 50 | 500 |
+            +----+-----+
+```
+
+### 13.11 总结
+
+| 阶段 | 函数 | 作用 |
+|------|------|------|
+| 初始化 | `nrindex_beginscan` | 分配扫描状态 |
+| 设置条件 | `nrindex_rescan` | 解析 WHERE 条件，构建搜索 key |
+| IPC 请求 | `RocksClientIndexRangeScan` | 发送请求到 Rocks Service |
+| 执行查询 | `indexengine_range_scan` | 在 std::map 中查找 |
+| 返回结果 | `nrindex_gettuple` | 返回 heap_tid 给 PostgreSQL |
+| 回表取数 | `heap_fetch` | 用 heap_tid 获取完整行 |
+| 清理资源 | `nrindex_endscan` | 释放内存 |
+
+**一句话总结**：`nrindex_rescan` 把 `WHERE val = 500` 转换成索引 key，通过 IPC 发送给 Rocks Service，在 `std::map` 中找到对应的 `heap_tid`，PostgreSQL 用这个 `heap_tid` 回表取出完整的行数据 `{id=50, val=500}`。
+
+---
+
+## 十四、大端字节序编码（Big-Endian Encoding）
+
+### 14.1 为什么需要大端编码？
+
+`std::map` 使用 **字典序（lexicographic order）** 比较字符串 key。这意味着它逐字节比较，从第一个字节开始。
+
+**问题**：x86 架构使用**小端字节序（Little-Endian）**，这会导致整数比较结果错误。
+
+```
+示例：比较 140 和 900
+
+小端存储（错误）：
+  140 = 0x0000008C → 存储为: 8C 00 00 00
+  900 = 0x00000384 → 存储为: 84 03 00 00
+
+字典序比较：8C > 84
+结论：140 > 900  ✗ 错误！
+
+大端存储（正确）：
+  140 = 0x0000008C → 存储为: 00 00 00 8C
+  900 = 0x00000384 → 存储为: 00 00 03 84
+
+字典序比较：00 00 00 8C < 00 00 03 84
+结论：140 < 900  ✓ 正确！
+```
+
+### 14.2 有符号整数的特殊处理
+
+对于有符号整数，还需要处理负数问题：
+
+```
+问题：负数的最高位是 1，正数是 0
+
+原始大端存储：
+  -1 = 0xFFFFFFFF → 存储为: FF FF FF FF
+   1 = 0x00000001 → 存储为: 00 00 00 01
+
+字典序比较：FF > 00
+结论：-1 > 1  ✗ 错误！
+
+解决方案：翻转符号位（XOR 0x80000000）
+
+翻转后：
+  -1 = 0xFFFFFFFF ^ 0x80000000 = 0x7FFFFFFF → 存储为: 7F FF FF FF
+   1 = 0x00000001 ^ 0x80000000 = 0x80000001 → 存储为: 80 00 00 01
+
+字典序比较：7F < 80
+结论：-1 < 1  ✓ 正确！
+```
+
+### 14.3 编码函数实现
+
+位于 `src/nrindex_access/nrindex_kv.c`：
+
+```c
+/* 无符号 32 位整数 - 大端编码 */
+static inline void encode_uint32_be(char *buf, uint32 val)
+{
+    buf[0] = (val >> 24) & 0xFF;  // 最高字节
+    buf[1] = (val >> 16) & 0xFF;
+    buf[2] = (val >> 8) & 0xFF;
+    buf[3] = val & 0xFF;          // 最低字节
+}
+
+/* 有符号 32 位整数 - 大端编码 + 符号位翻转 */
+static inline void encode_int32_be(char *buf, int32 val)
+{
+    uint32 uval = (uint32)val ^ 0x80000000;  // 翻转符号位
+    encode_uint32_be(buf, uval);
+}
+
+/* 有符号 64 位整数 - 大端编码 + 符号位翻转 */
+static inline void encode_int64_be(char *buf, int64 val)
+{
+    uint64 uval = (uint64)val ^ 0x8000000000000000ULL;
+    buf[0] = (uval >> 56) & 0xFF;
+    buf[1] = (uval >> 48) & 0xFF;
+    buf[2] = (uval >> 40) & 0xFF;
+    buf[3] = (uval >> 32) & 0xFF;
+    buf[4] = (uval >> 24) & 0xFF;
+    buf[5] = (uval >> 16) & 0xFF;
+    buf[6] = (uval >> 8) & 0xFF;
+    buf[7] = uval & 0xFF;
+}
+```
+
+### 14.4 解码函数实现
+
+```c
+/* 无符号 32 位整数 - 大端解码 */
+static inline uint32 decode_uint32_be(const char *buf)
+{
+    return ((uint32)(unsigned char)buf[0] << 24) |
+           ((uint32)(unsigned char)buf[1] << 16) |
+           ((uint32)(unsigned char)buf[2] << 8) |
+           ((uint32)(unsigned char)buf[3]);
+}
+
+/* 有符号 32 位整数 - 大端解码 + 符号位翻转 */
+static inline int32 decode_int32_be(const char *buf)
+{
+    uint32 uval = decode_uint32_be(buf);
+    return (int32)(uval ^ 0x80000000);  // 翻转符号位恢复原值
+}
+
+/* 有符号 64 位整数 - 大端解码 + 符号位翻转 */
+static inline int64 decode_int64_be(const char *buf)
+{
+    uint64 uval = ((uint64)(unsigned char)buf[0] << 56) |
+                  ((uint64)(unsigned char)buf[1] << 48) |
+                  ((uint64)(unsigned char)buf[2] << 40) |
+                  ((uint64)(unsigned char)buf[3] << 32) |
+                  ((uint64)(unsigned char)buf[4] << 24) |
+                  ((uint64)(unsigned char)buf[5] << 16) |
+                  ((uint64)(unsigned char)buf[6] << 8) |
+                  ((uint64)(unsigned char)buf[7]);
+    return (int64)(uval ^ 0x8000000000000000ULL);
+}
+```
+
+### 14.5 Key 序列化格式
+
+索引 Key 的完整序列化格式如下：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     NRIndexKey 序列化格式                        │
+├─────────────┬─────────────┬────────────────────────────────────┤
+│  indexOid   │  key_size   │            key_data                │
+│  (4 bytes)  │  (4 bytes)  │         (variable)                 │
+│  大端编码   │   大端编码   │          大端编码                  │
+└─────────────┴─────────────┴────────────────────────────────────┘
+
+示例：索引 OID=16385，键值 val=900
+
+indexOid = 16385 = 0x00004001
+  大端编码: 00 00 40 01
+
+key_size = 4
+  大端编码: 00 00 00 04
+
+key_data (INT4, val=900):
+  900 = 0x00000384
+  翻转符号位: 0x00000384 ^ 0x80000000 = 0x80000384
+  大端编码: 80 00 03 84
+
+完整序列化结果（12 字节）:
+  00 00 40 01  00 00 00 04  80 00 03 84
+  └─ OID ──┘  └─ size ──┘  └─ key ───┘
+```
+
+### 14.6 Key 创建流程
+
+```c
+NRIndexKey nrindex_key_create(Oid indexOid, Datum *values, bool *isnull,
+                               int nkeys, TupleDesc indexTupDesc)
+{
+    // 1. 计算总大小
+    for (i = 0; i < nkeys; i++) {
+        switch (typid) {
+            case INT2OID: lens[i] = 4; break;  // 扩展为 int32
+            case INT4OID: lens[i] = 4; break;
+            case INT8OID: lens[i] = 8; break;
+            default: lens[i] = datumEstimateSpace(...);
+        }
+    }
+
+    // 2. 分配内存
+    ikey = palloc0(total_size);
+    ikey->indexOid = indexOid;
+    ikey->key_size = ...;
+
+    // 3. 序列化各列值（大端编码）
+    for (i = 0; i < nkeys; i++) {
+        switch (typid) {
+            case INT2OID:
+                encode_int32_be(pos, (int32)DatumGetInt16(values[i]));
+                pos += 4;
+                break;
+            case INT4OID:
+                encode_int32_be(pos, DatumGetInt32(values[i]));
+                pos += 4;
+                break;
+            case INT8OID:
+                encode_int64_be(pos, DatumGetInt64(values[i]));
+                pos += 8;
+                break;
+            default:
+                datumSerialize(values[i], ...);  // PostgreSQL 默认序列化
+        }
+    }
+
+    return ikey;
+}
+```
+
+### 14.7 范围查询如何利用大端编码
+
+```
+查询：SELECT * FROM test_idx WHERE val > 900
+
+步骤：
+1. 构建 min_key（val=901，包含起始点）
+2. 构建 max_key（最大值，或索引边界）
+3. 发送到 Rocks Service
+
+在 std::map 中：
+  所有 key 都是大端编码
+  map.lower_bound(min_key) 返回第一个 >= min_key 的迭代器
+
+  由于大端编码保证了字典序 = 数值序：
+    key(901) < key(902) < key(1000) < ...
+
+  所以范围查询结果是正确排序的！
+```
+
+### 14.8 支持的数据类型
+
+| PostgreSQL 类型 | OID | 编码方式 | 大小 |
+|----------------|-----|----------|------|
+| `smallint` (INT2) | INT2OID | 扩展为 int32，大端编码 | 4 字节 |
+| `integer` (INT4) | INT4OID | 大端编码 + 符号位翻转 | 4 字节 |
+| `bigint` (INT8) | INT8OID | 大端编码 + 符号位翻转 | 8 字节 |
+| 其他类型 | - | PostgreSQL 默认 `datumSerialize` | 变长 |
+
+### 14.9 总结
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| 整数比较错误 | x86 小端存储，字典序比较错误 | 使用大端编码 |
+| 负数排序错误 | 负数最高位为 1，字典序大于正数 | 翻转符号位 (XOR 0x80000000) |
+| 范围查询错误 | 上述两个原因导致 | 大端编码 + 符号位翻转 |
+
+**核心原理**：通过大端编码和符号位翻转，使得 `std::map` 的字典序比较结果与数值比较结果一致，从而支持正确的范围查询。

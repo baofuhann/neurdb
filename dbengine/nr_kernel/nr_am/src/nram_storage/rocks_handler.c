@@ -232,6 +232,7 @@ NRIndexValue RocksClientIndexGet(NRIndexKey ikey) {
 bool RocksClientIndexPut(NRIndexKey ikey, NRIndexValue ivalue) {
     KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
     Size key_len, val_len, total_len;
+    // 步骤1: 序列化 Key 和 Value
     char *serialized_key = nrindex_key_serialize(ikey, &key_len);
     char *serialized_val = nrindex_value_serialize(ivalue, &val_len);
     KVMsg *msg = NewMsg(kv_index_put, ikey->indexOid, kv_status_none, MyProcPid), *resp;
@@ -244,6 +245,7 @@ bool RocksClientIndexPut(NRIndexKey ikey, NRIndexValue ivalue) {
     msg->header.entitySize = total_len;
     msg->entity = palloc(total_len);
 
+    // 步骤2: 构建 IPC 消息
     char *ptr = msg->entity;
     memcpy(ptr, &key_len, sizeof(Size));
     ptr += sizeof(Size);
@@ -253,6 +255,7 @@ bool RocksClientIndexPut(NRIndexKey ikey, NRIndexValue ivalue) {
     ptr += sizeof(Size);
     memcpy(ptr, serialized_val, val_len);
 
+    // 步骤3: 发送到共享内存通道
     if (!KVChannelPushMsg(req_chan, msg, -1)) {
         elog(WARNING, "RocksClientIndexPut: message pushing failed.");
         return false;
@@ -307,19 +310,36 @@ bool RocksClientIndexDelete(NRIndexKey ikey) {
     return success;
 }
 
-bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key, 
+bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key,
                                NRIndexKey **out_keys, NRIndexValue **out_results, int *out_count) {
     KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
-    Size start_len, end_len, total_len;
-    char *serialized_start = nrindex_key_serialize(start_key, &start_len);
-    char *serialized_end = nrindex_key_serialize(end_key, &end_len);
-    KVMsg *msg = NewMsg(kv_index_range_scan, start_key->indexOid, kv_status_none, MyProcPid), *resp;
+    Size start_len = 0, end_len = 0, total_len;
+    char *serialized_start = NULL, *serialized_end = NULL;
+    Oid indexOid;
+    KVMsg *msg, *resp;
     bool success;
     char *ptr;
 
     NRAM_INFO();
 
-    total_len = start_len + end_len + 2 * sizeof(Size);
+    /* Handle NULL keys - use length 0 to indicate NULL */
+    if (start_key) {
+        serialized_start = nrindex_key_serialize(start_key, &start_len);
+        indexOid = start_key->indexOid;
+    } else if (end_key) {
+        indexOid = end_key->indexOid;
+    } else {
+        elog(WARNING, "RocksClientIndexRangeScan: both keys are NULL");
+        return false;
+    }
+
+    if (end_key) {
+        serialized_end = nrindex_key_serialize(end_key, &end_len);
+    }
+
+    msg = NewMsg(kv_index_range_scan, indexOid, kv_status_none, MyProcPid);
+
+    total_len = 2 * sizeof(Size) + start_len + end_len;
 
     msg->header.entitySize = total_len;
     msg->entity = palloc(total_len);
@@ -327,16 +347,28 @@ bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key,
     ptr = msg->entity;
     memcpy(ptr, &start_len, sizeof(Size));
     ptr += sizeof(Size);
-    memcpy(ptr, serialized_start, start_len);
-    ptr += start_len;
+    if (start_len > 0) {
+        memcpy(ptr, serialized_start, start_len);
+        ptr += start_len;
+    }
     memcpy(ptr, &end_len, sizeof(Size));
     ptr += sizeof(Size);
-    memcpy(ptr, serialized_end, end_len);
+    if (end_len > 0) {
+        memcpy(ptr, serialized_end, end_len);
+    }
+
+    if (serialized_start) pfree(serialized_start);
+    if (serialized_end) pfree(serialized_end);
+
+    elog(NOTICE, "[Client] RocksClientIndexRangeScan: sending message, start_len=%zu, end_len=%zu, total_len=%zu",
+         start_len, end_len, total_len);
 
     if (!KVChannelPushMsg(req_chan, msg, -1)) {
         elog(WARNING, "RocksClientIndexRangeScan: message pushing failed.");
         return false;
     }
+
+    elog(NOTICE, "[Client] RocksClientIndexRangeScan: message sent, waiting for response...");
 
     resp = KVChannelPopMsg(resp_chan, -1);
     success = resp && resp->header.status == kv_status_ok && resp->header.op == kv_index_range_scan;
@@ -365,8 +397,7 @@ bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key,
         elog(WARNING, "[NRAM] Rocks INDEX_RANGE_SCAN failed");
     }
 
-    pfree(serialized_start);
-    pfree(serialized_end);
+    /* Note: serialized_start and serialized_end were already freed at lines 357-358 */
     pfree(msg->entity);
     pfree(msg);
     if (resp) {
