@@ -27,26 +27,32 @@ nrindex_key_create(Oid indexOid, Datum *values, bool *isnull, int nkeys, TupleDe
     Size total_size;
     char *pos;
     Size *lens;
-    
+
+    elog(DEBUG1, "nrindex_key_create: indexOid=%u, nkeys=%d", indexOid, nkeys);
+
     /* Calculate total size needed */
     total_size = offsetof(NRIndexKeyData, key_data);
     lens = palloc(sizeof(Size) * nkeys);
-    
+
     for (int i = 0; i < nkeys; i++) {
         if (!isnull[i]) {
             Form_pg_attribute attr = TupleDescAttr(indexTupDesc, i);
             lens[i] = datumEstimateSpace(values[i], false, attr->attbyval, attr->attlen);
             total_size += lens[i];
+            elog(DEBUG1, "  Key[%d]: type=%u, len=%zu, isnull=false", i, attr->atttypid, lens[i]);
         } else {
             lens[i] = 0;
+            elog(DEBUG1, "  Key[%d]: isnull=true", i);
         }
     }
-    
+
     /* Allocate key structure */
     ikey = (NRIndexKey)palloc0(total_size);
     ikey->indexOid = indexOid;
     ikey->key_size = total_size - offsetof(NRIndexKeyData, key_data);
-    
+
+    elog(DEBUG1, "  Total key_size=%u, total_struct_size=%zu", ikey->key_size, total_size);
+
     /* Serialize key values */
     pos = ikey->key_data;
     for (int i = 0; i < nkeys; i++) {
@@ -55,7 +61,7 @@ nrindex_key_create(Oid indexOid, Datum *values, bool *isnull, int nkeys, TupleDe
             datumSerialize(values[i], false, attr->attbyval, attr->attlen, &pos);
         }
     }
-    
+
     pfree(lens);
     return ikey;
 }
@@ -228,8 +234,20 @@ nrindex_rocks_get(NRIndexKey ikey)
 bool
 nrindex_rocks_put(NRIndexKey ikey, NRIndexValue ivalue)
 {
+    bool result;
+
+    elog(DEBUG1, "nrindex_rocks_put: indexOid=%u, key_size=%u",
+         ikey->indexOid, ikey->key_size);
+    elog(DEBUG1, "  heap_tid=(%u,%u), xact_id=%u, flags=%u",
+         ItemPointerGetBlockNumber(&ivalue->heap_tid),
+         ItemPointerGetOffsetNumber(&ivalue->heap_tid),
+         ivalue->xact_id, ivalue->flags);
+
     /* Use direct index handler */
-    return RocksClientIndexPut(ikey, ivalue);
+    result = RocksClientIndexPut(ikey, ivalue); // 发送 IPC 消息
+
+    elog(DEBUG1, "  RocksDB put result: %s", result ? "success" : "failed");
+    return result;
 }
 
 bool

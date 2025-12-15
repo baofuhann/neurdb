@@ -215,7 +215,7 @@ void run_rocks_no_thread(void) {
     proc_exit(0);
 }
 
-
+/*进程消息处理*/
 void *process_request(void *arg) {
     KVMsg *msg = (KVMsg *)arg, *resp = NULL;
     char chan_name[64];
@@ -472,6 +472,7 @@ KVMsg *handle_kv_index_put(KVMsg *msg) {
     NRAM_TEST_INFO("[IndexEngine] handle_kv_index_put, key_len=%lu, val_len=%lu, indexOid=%u", 
                    key_len, value_len, ikey->indexOid);
 
+    /* 调用 indexengine_put 存入 std::map */
     indexengine_put(index_engine, ikey, ivalue);
 
     resp = NewMsg(kv_index_put, msg->header.relId, kv_status_ok, msg->header.respChannel);
@@ -512,21 +513,24 @@ KVMsg *handle_kv_index_range_scan(KVMsg *msg) {
 
     Assert(msg->entity != NULL && msg->header.entitySize > 0);
 
-    /* Parse key lengths */
+    /* Parse message: [start_len][start_key_data][end_len][end_key_data] */
     memcpy(&key_len_1, buf, sizeof(Size));
     buf += sizeof(Size);
+    start_key = nrindex_key_deserialize(buf, key_len_1);
+    buf += key_len_1;
     memcpy(&key_len_2, buf, sizeof(Size));
     buf += sizeof(Size);
+    end_key = nrindex_key_deserialize(buf, key_len_2);
 
-    /* Deserialize keys */
-    start_key = nrindex_key_deserialize(buf, key_len_1);
-    end_key = nrindex_key_deserialize(buf + key_len_1, key_len_2);
-
-    NRAM_TEST_INFO("[IndexEngine] handle_kv_index_range_scan, [index %u - %u)",
-                   start_key->indexOid, end_key->indexOid);
+    elog(LOG, "[IndexEngine] handle_kv_index_range_scan: start_key indexOid=%u, key_size=%u",
+         start_key->indexOid, start_key->key_size);
+    elog(LOG, "[IndexEngine] handle_kv_index_range_scan: end_key indexOid=%u, key_size=%u",
+         end_key->indexOid, end_key->key_size);
 
     /* Query range from IndexEngine */
     indexengine_range_scan(index_engine, start_key, end_key, &result_count, &keys, &results);
+
+    elog(LOG, "[IndexEngine] range_scan returned result_count=%u", result_count);
 
     total_len = sizeof(int);  // result_count
     for (int i = 0; i < result_count; i++) {
@@ -567,8 +571,11 @@ KVMsg *handle_kv_index_range_scan(KVMsg *msg) {
         nrindex_value_free(results[i]);
     }
 
-    pfree(keys);
-    pfree(results);
+    /* Only free if not NULL (result_count > 0) */
+    if (keys)
+        pfree(keys);
+    if (results)
+        pfree(results);
     nrindex_key_free(start_key);
     nrindex_key_free(end_key);
 

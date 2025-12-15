@@ -59,9 +59,10 @@ public:
                   std::vector<std::pair<std::string, std::string>>& results) {
         // Find the starting position
         auto it = data_store.lower_bound(start_key);
-        
-        // Iterate until we hit the end key or end of map
-        while (it != data_store.end() && it->first < end_key) {
+
+        // Iterate until we pass the end key or end of map
+        // Use <= to include end_key (important for equality searches where start_key == end_key)
+        while (it != data_store.end() && it->first <= end_key) {
             results.push_back(std::make_pair(it->first, it->second));
             ++it;
         }

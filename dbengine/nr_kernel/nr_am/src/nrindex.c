@@ -28,6 +28,7 @@
 #include "nram_access/kv.h"
 #include "nram_xact/xact.h"
 #include "nram_xact/action.h"
+#include "access/stratnum.h"  /* BTEqualStrategyNumber 等 */
 
 // PG_MODULE_MAGIC;
 
@@ -77,50 +78,79 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
     bool isnull[INDEX_MAX_KEYS];
     int nkeys;
     int ntuples = 0;
-    
+
+    elog(NOTICE, "========== NRINDEX BUILD START ==========");
+    elog(NOTICE, "Building index on table: %s (OID: %u)",
+         RelationGetRelationName(heap), heap->rd_id);
+    elog(NOTICE, "Index name: %s (OID: %u)",
+         RelationGetRelationName(index), index->rd_id);
+
     heapTupDesc = RelationGetDescr(heap);
     indexTupDesc = RelationGetDescr(index);
     nkeys = indexInfo->ii_NumIndexKeyAttrs;
-    
+
+    elog(NOTICE, "Number of index key columns: %d", nkeys);
+    for (int i = 0; i < nkeys; i++) {
+        int attrNum = indexInfo->ii_IndexAttrNumbers[i];
+        elog(NOTICE, "  Key column %d: heap attribute number = %d", i, attrNum);
+    }
+
     result = (IndexBuildResult *) palloc(sizeof(IndexBuildResult));
-    
-    /* Start a heap scan */
+
+    /*开始扫描堆表（heap table），读取所有数据行来构建索引*/
+    /*Heap（堆表）是 PostgreSQL 存储实际数据行的地方*/
+    /*创建索引时需要. 1 读取堆表中的每一行数据 2. 提取索引列的值 3. 构建索引条目存入 RocksDB*/
+    elog(NOTICE, "Starting heap scan...");
     scan = table_beginscan(heap, SnapshotAny, 0, NULL);
-    
+
     /* Process each tuple in the heap */
+    /*遍历每一行数据*/
     while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL) {
         /* Extract index key values from heap tuple */
+        /*对索引列进行遍历 nkeys = 1 (只有1个索引列)*/
         for (int i = 0; i < nkeys; i++) {
             int heapAttrNum = indexInfo->ii_IndexAttrNumbers[i];
             if (heapAttrNum == 0) {
                 /* System column */
+                /*读取每一行的数据，只提取当前索引列的值，其他未被索引的列不读取*/
                 values[i] = heap_getsysattr(heapTuple, heapAttrNum, heapTupDesc, &isnull[i]);
             } else {
                 /* Regular column */
                 values[i] = heap_getattr(heapTuple, heapAttrNum, heapTupDesc, &isnull[i]);
             }
         }
-        
+
         /* Build index entry using new index structures */
         NRIndexKey ikey = nrindex_key_create(index->rd_id, values, isnull, nkeys, indexTupDesc);
         NRIndexValue ivalue = nrindex_value_create(&heapTuple->t_self);
-        
+
+        /* Debug output for each tuple */
+        elog(NOTICE, "Processing tuple #%d: ctid=(%u,%u), key_size=%u, value_len=%d",
+             ntuples + 1,
+             ItemPointerGetBlockNumber(&heapTuple->t_self),
+             ItemPointerGetOffsetNumber(&heapTuple->t_self),
+             ikey->key_size,
+             (int)sizeof(NRIndexValueData));
+
         /* Store in RocksDB */
+        /*使用新的 RocksDB 存储函数将索引条目存入 RocksDB*/
         if (!nrindex_rocks_put(ikey, ivalue)) {
             elog(ERROR, "Failed to insert index entry during build");
         }
-        
+
         ntuples++;
-        
         nrindex_key_free(ikey);
         nrindex_value_free(ivalue);
     }
-    
+
     table_endscan(scan);
-    
+
     result->heap_tuples = ntuples;
     result->index_tuples = ntuples;
-    
+
+    elog(NOTICE, "========== NRINDEX BUILD COMPLETE ==========");
+    elog(NOTICE, "Total tuples indexed: %d", ntuples);
+
     return result;
 }
 
@@ -146,33 +176,46 @@ nrindex_insert(Relation index, Datum *values, bool *isnull,
     NRIndexKey ikey;
     NRIndexValue ivalue;
     bool result = true;
-    
+
+    elog(NOTICE, ">>> NRINDEX INSERT <<<");
+    elog(NOTICE, "Index: %s (OID: %u), inserting for ctid=(%u,%u)",
+         RelationGetRelationName(index), index->rd_id,
+         ItemPointerGetBlockNumber(ht_ctid),
+         ItemPointerGetOffsetNumber(ht_ctid));
+
     /* Build index key and value using new structures */
     ikey = nrindex_key_create(index->rd_id, values, isnull, indexInfo->ii_NumIndexKeyAttrs, RelationGetDescr(index));
     ivalue = nrindex_value_create(ht_ctid);
-    
+
+    elog(NOTICE, "Created key: indexOid=%u, key_size=%u",
+         ikey->indexOid, ikey->key_size);
+
     /* Check for uniqueness if required */
     if (checkUnique != UNIQUE_CHECK_NO) {
+        elog(NOTICE, "Checking uniqueness...");
         NRIndexValue existing_value = nrindex_rocks_get(ikey);
         if (existing_value != NULL) {
             /* Check if it's the same tuple */
             if (!ItemPointerEquals(ht_ctid, &existing_value->heap_tid)) {
+                elog(NOTICE, "Duplicate key found!");
                 result = false; /* Duplicate key violation */
             }
             nrindex_value_free(existing_value);
         }
     }
-    
+
     if (result) {
         /* Store in RocksDB */
+        elog(NOTICE, "Storing in RocksDB...");
         if (!nrindex_rocks_put(ikey, ivalue)) {
             elog(ERROR, "Failed to insert index entry");
         }
+        elog(NOTICE, "Insert successful!");
     }
-    
+
     nrindex_key_free(ikey);
     nrindex_value_free(ivalue);
-    
+
     return result;
 }
 
@@ -243,7 +286,12 @@ static IndexScanDesc
 nrindex_beginscan(Relation r, int nkeys, int norderbys)
 {
     NRIndexScanDesc scan;
-    
+
+    elog(NOTICE, "========== NRINDEX BEGINSCAN ==========");
+    elog(NOTICE, "Index: %s (OID: %u)", RelationGetRelationName(r), r->rd_id);
+    elog(NOTICE, "Number of scan keys: %d", nkeys);
+    elog(NOTICE, "Number of order by keys: %d", norderbys);
+
     scan = (NRIndexScanDesc) RelationGetIndexScan(r, nkeys, norderbys);
     scan->min_key = NULL;
     scan->max_key = NULL;
@@ -253,7 +301,9 @@ nrindex_beginscan(Relation r, int nkeys, int norderbys)
     scan->cursor = 0;
     scan->is_range_scan = false;
     scan->is_null_scan = false;
-    
+
+    elog(NOTICE, "Scan descriptor initialized");
+
     return (IndexScanDesc) scan;
 }
 
@@ -265,7 +315,26 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
                ScanKey orderbys, int norderbys)
 {
     NRIndexScanDesc nrscan = (NRIndexScanDesc) scan;
-    
+
+    elog(NOTICE, "========== NRINDEX RESCAN ==========");
+    elog(NOTICE, "Number of scan keys: %d", nscankeys);
+
+    /* 打印每个 scankey 的信息 */
+    for (int i = 0; i < nscankeys; i++) {
+        elog(NOTICE, "  ScanKey[%d]:", i);
+        elog(NOTICE, "    sk_attno = %d (which column)", scankey[i].sk_attno);
+        elog(NOTICE, "    sk_strategy = %d (1:<, 2:<=, 3:=, 4:>=, 5:>)",
+             scankey[i].sk_strategy);
+        elog(NOTICE, "    sk_flags = %d", scankey[i].sk_flags);
+        /* 尝试打印查询值（假设是 int4） */
+        if (!(scankey[i].sk_flags & SK_ISNULL)) {
+            elog(NOTICE, "    sk_argument = %d (search value)",
+                 DatumGetInt32(scankey[i].sk_argument));
+        } else {
+            elog(NOTICE, "    sk_argument = NULL");
+        }
+    }
+
     /* Free previous results */
     if (nrscan->results_key) {
         for (int i = 0; i < nrscan->result_count; i++) {
@@ -275,32 +344,110 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
         pfree(nrscan->results_key);
         pfree(nrscan->results);
     }
-    
+
     nrscan->result_count = 0;
     nrscan->cursor = 0;
-    
+
     /* Build scan keys for RocksDB range scan */
+    /* -- 触发这个条件的 SQL SELECT * FROM test_idx WHERE val IS NULL; 
+       - nscankeys > 0 — 有查询条件
+       - scankey[0].sk_flags & SK_ISNULL — 位运算，检查是否设置了 SK_ISNULL 标志
+    */
     if (nscankeys > 0 && scankey[0].sk_flags & SK_ISNULL) {
         /* Handle IS NULL scan */
+        elog(NOTICE, "Scan type: IS NULL scan");
         nrscan->is_range_scan = false;
         nrscan->is_null_scan = true;
         /* TODO: Implement NULL handling */
     } else if (nscankeys > 0) {
-        /* Range scan based on scan keys */
-        /* TODO: Build proper min/max keys from scan keys */
-        nrscan->min_key = NULL; /* Will be created from scan keys */
-        nrscan->max_key = NULL; /* Will be created from scan keys */
-        
+        /*  有扫描条件，且不是 IS NULL 查询（正常的值比较）
+            情况 2: WHERE val = 500, val > 100, val < 1000 等
+            正常的值比较查询
+        */
+        Relation indexRel = scan->indexRelation;
+        TupleDesc indexTupDesc = RelationGetDescr(indexRel);
+        Oid indexOid = RelationGetRelid(indexRel);
+
+        /* 准备 values 和 isnull 数组 */
+        Datum *values = palloc(sizeof(Datum) * nscankeys);
+        bool *isnull = palloc(sizeof(bool) * nscankeys);
+
+        for (int i = 0; i < nscankeys; i++) {
+            if (scankey[i].sk_flags & SK_ISNULL) {
+                isnull[i] = true;
+                values[i] = (Datum) 0;
+            } else {
+                isnull[i] = false;
+                values[i] = scankey[i].sk_argument;  /* 取出查询值 (如 500) */
+            }
+        }
+
+        elog(NOTICE, "Building search key: indexOid=%u, nscankeys=%d", indexOid, nscankeys);
+
+        /* 根据操作符类型构建 key
+           BTEqualStrategyNumber=3, BTLessStrategyNumber=1, BTLessEqualStrategyNumber=2,
+           BTGreaterEqualStrategyNumber=4, BTGreaterStrategyNumber=5 */
+        switch (scankey[0].sk_strategy) {
+            case BTEqualStrategyNumber:  /* = 等值查询 */
+                elog(NOTICE, "Strategy: EQUAL (=)");
+                /* min_key = max_key = 查询值 */
+                nrscan->min_key = nrindex_key_create(indexOid, values, isnull,
+                                                      nscankeys, indexTupDesc);
+                nrscan->max_key = nrindex_key_copy(nrscan->min_key);
+                break;
+
+            case BTLessStrategyNumber:      /* < */
+            case BTLessEqualStrategyNumber: /* <= */
+                elog(NOTICE, "Strategy: LESS (<) or LESS_EQUAL (<=)");
+                /* min_key = NULL (从头开始), max_key = 查询值 */
+                nrscan->min_key = NULL;
+                nrscan->max_key = nrindex_key_create(indexOid, values, isnull,
+                                                      nscankeys, indexTupDesc);
+                break;
+
+            case BTGreaterStrategyNumber:      /* > */
+            case BTGreaterEqualStrategyNumber: /* >= */
+                elog(NOTICE, "Strategy: GREATER (>) or GREATER_EQUAL (>=)");
+                /* min_key = 查询值, max_key = NULL (到结尾) */
+                nrscan->min_key = nrindex_key_create(indexOid, values, isnull,
+                                                      nscankeys, indexTupDesc);
+                nrscan->max_key = NULL;
+                break;
+
+            default:
+                elog(NOTICE, "Unknown strategy: %d", scankey[0].sk_strategy);
+                nrscan->min_key = NULL;
+                nrscan->max_key = NULL;
+                break;
+        }
+
+        pfree(values);
+        pfree(isnull);
+
         nrscan->is_range_scan = true;
         nrscan->is_null_scan = false;
-        
+
+        elog(NOTICE, "Calling nrindex_rocks_range_scan: min_key=%s, max_key=%s",
+             nrscan->min_key ? "SET" : "NULL",
+             nrscan->max_key ? "SET" : "NULL");
+
         /* Perform range scan using new index functions */
         if (!nrindex_rocks_range_scan(nrscan->min_key, nrscan->max_key,
                                      &nrscan->results_key, &nrscan->results,
                                      &nrscan->result_count)) {
-            elog(ERROR, "Failed to perform range scan");
+            elog(NOTICE, "Range scan returned no results or failed");
         }
+        elog(NOTICE, "Range scan result_count = %d", nrscan->result_count);
+    } else {
+        /*
+            情况 3: nscankeys == 0
+            没有 WHERE 条件，全表扫描
+            SELECT * FROM test_idx;
+        */
+        elog(NOTICE, "No scan keys provided - full scan");
     }
+
+    elog(NOTICE, "========== NRINDEX RESCAN END ==========");
 }
 
 /*
@@ -310,25 +457,36 @@ static bool
 nrindex_gettuple(IndexScanDesc scan, ScanDirection direction)
 {
     NRIndexScanDesc nrscan = (NRIndexScanDesc) scan;
-    
+
+    elog(NOTICE, ">>> NRINDEX GETTUPLE <<<");
+    elog(NOTICE, "cursor=%d, result_count=%d", nrscan->cursor, nrscan->result_count);
+
     if (direction != ForwardScanDirection) {
         elog(WARNING, "nrindex only supports forward scan");
         return false;
     }
-    
+
     if (nrscan->cursor >= nrscan->result_count) {
+        elog(NOTICE, "No more results (cursor >= result_count)");
+        elog(NOTICE, "Returning false - scan complete");
         return false;
     }
-    
+
     /* Get the current result */
     NRIndexKey ikey = nrscan->results_key[nrscan->cursor];
     NRIndexValue ivalue = nrscan->results[nrscan->cursor];
-    
+
     /* Set the tuple identifier */
     scan->xs_heaptid = ivalue->heap_tid;
-    
+
+    elog(NOTICE, "Found result[%d]: heap_tid=(%u,%u)",
+         nrscan->cursor,
+         ItemPointerGetBlockNumber(&ivalue->heap_tid),
+         ItemPointerGetOffsetNumber(&ivalue->heap_tid));
+    elog(NOTICE, "Returning true - PostgreSQL will fetch row at this ctid");
+
     nrscan->cursor++;
-    
+
     return true;
 }
 
@@ -359,9 +517,14 @@ static void
 nrindex_endscan(IndexScanDesc scan)
 {
     NRIndexScanDesc nrscan = (NRIndexScanDesc) scan;
-    
+
+    elog(NOTICE, "========== NRINDEX ENDSCAN ==========");
+    elog(NOTICE, "Ending index scan, cleaning up resources");
+    elog(NOTICE, "  result_count = %d", nrscan->result_count);
+
     /* Free scan results */
     if (nrscan->results_key) {
+        elog(NOTICE, "  Freeing %d result key-value pairs", nrscan->result_count);
         for (int i = 0; i < nrscan->result_count; i++) {
             nrindex_key_free(nrscan->results_key[i]);
             nrindex_value_free(nrscan->results[i]);
@@ -369,9 +532,17 @@ nrindex_endscan(IndexScanDesc scan)
         pfree(nrscan->results_key);
         pfree(nrscan->results);
     }
-    
-    if (nrscan->min_key) nrindex_key_free(nrscan->min_key);
-    if (nrscan->max_key) nrindex_key_free(nrscan->max_key);
+
+    if (nrscan->min_key) {
+        elog(NOTICE, "  Freeing min_key");
+        nrindex_key_free(nrscan->min_key);
+    }
+    if (nrscan->max_key) {
+        elog(NOTICE, "  Freeing max_key");
+        nrindex_key_free(nrscan->max_key);
+    }
+
+    elog(NOTICE, "========== NRINDEX ENDSCAN DONE ==========");
 }
 
 /*

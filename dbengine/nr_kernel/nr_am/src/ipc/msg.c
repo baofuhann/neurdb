@@ -349,6 +349,18 @@ void PrintKVMsg(const KVMsg* msg) {
         case kv_range:
             op_str = "RANGE";
             break;
+        case kv_index_put:
+            op_str = "INDEX_PUT";
+            break;
+        case kv_index_get:
+            op_str = "INDEX_GET";
+            break;
+        case kv_index_delete:
+            op_str = "INDEX_DELETE";
+            break;
+        case kv_index_range_scan:
+            op_str = "INDEX_RANGE_SCAN";
+            break;
         default:
             op_str = "UNKNOWN_OP";
             elog(ERROR, "PrintKVMsg: unknown op %d", msg->header.op);
