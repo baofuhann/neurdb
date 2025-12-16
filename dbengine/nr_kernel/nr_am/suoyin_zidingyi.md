@@ -2720,3 +2720,83 @@ FOR i IN 1..100000 LOOP
     ...
 END LOOP;
 ```
+
+## 16. pgbench 索引性能测试
+
+### 16.1 pgbench 测试命令
+
+```bash
+/code/neurdb-dev/psql/bin/pgbench -h localhost -U neurdb -n -f /tmp/test_query.sql -c 64 -t 1 neurdb
+```
+
+| 参数 | 含义 |
+|------|------|
+| `-h localhost` | 连接本地数据库 |
+| `-U neurdb` | 使用 neurdb 用户 |
+| `-n` | 不执行初始化 |
+| `-f /tmp/test_query.sql` | 执行自定义 SQL 文件 |
+| `-c 64` | 64 个并发客户端 |
+| `-t 1` | 每个客户端执行 1 次事务 |
+| `neurdb` | 数据库名 |
+
+### 16.2 确认查询是否使用了索引
+
+#### 方法一：EXPLAIN ANALYZE
+
+```sql
+EXPLAIN ANALYZE SELECT * FROM test_lipp WHERE val = 97810;
+```
+
+如果使用了索引，会显示 `Index Scan using 索引名`。
+
+#### 方法二：查看索引使用统计
+
+```sql
+-- 测试前后对比
+SELECT indexrelname, idx_scan, idx_tup_read
+FROM pg_stat_user_indexes
+WHERE relname = 'test_lipp';
+```
+
+### 16.3 强制不使用索引（对比测试）
+
+**重要：SET 命令只在当前 session 生效，不影响 pgbench 创建的新连接！**
+
+#### 错误做法（无效）
+
+```sql
+-- 在 psql 中执行，只对当前连接有效
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+```
+
+然后运行 pgbench —— pgbench 的连接不受影响，仍然使用索引。
+
+#### 正确做法
+
+把 SET 命令加到测试文件中：
+
+```bash
+# 创建不使用索引的测试文件
+echo "SET enable_indexscan = off;
+SET enable_bitmapscan = off;" > /tmp/test_query_no_index.sql
+cat /tmp/test_query.sql >> /tmp/test_query_no_index.sql
+```
+
+然后分别测试：
+
+```bash
+# 不使用索引
+/code/neurdb-dev/psql/bin/pgbench -h localhost -U neurdb -n -f /tmp/test_query_no_index.sql -c 64 -t 1 neurdb
+
+# 使用索引
+/code/neurdb-dev/psql/bin/pgbench -h localhost -U neurdb -n -f /tmp/test_query.sql -c 64 -t 1 neurdb
+```
+
+### 16.4 恢复默认设置
+
+```sql
+SET enable_indexscan = on;
+SET enable_bitmapscan = on;
+SET enable_seqscan = on;
+```
