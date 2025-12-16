@@ -2236,3 +2236,487 @@ NRIndexKey nrindex_key_create(Oid indexOid, Datum *values, bool *isnull,
 | 范围查询错误 | 上述两个原因导致 | 大端编码 + 符号位翻转 |
 
 **核心原理**：通过大端编码和符号位翻转，使得 `std::map` 的字典序比较结果与数值比较结果一致，从而支持正确的范围查询。
+
+---
+
+## 十五、LIPP 索引测试流程
+
+本节介绍如何使用 SOSD 数据集测试 LIPP（Learned Index with Precise Positions）索引的性能。
+
+### 15.1 LIPP 索引概述
+
+LIPP 是一种学习索引，使用线性模型预测 key 的位置，相比传统 B-tree 具有更好的空间效率和查询性能。
+
+**LIPP 特点：**
+- 支持 `insert(key, value)` 插入
+- 支持 `at(key)` 点查询
+- 支持 `exists(key)` 存在性检查
+- **不支持** 删除操作
+- **不支持** 原生范围查询
+
+**当前实现：**
+- 每个索引（indexOid）对应一个独立的 LIPP 实例
+- Key 类型：`int64_t`（通过符号位翻转编码）
+- Value 类型：`uint64_t`（压缩的 heap_tid）
+
+### 15.2 测试数据准备
+
+#### 15.2.1 下载 SOSD 数据集
+
+```bash
+# 创建目录
+mkdir -p /hdd9/benjamin/SOSD/scripts/data
+cd /hdd9/benjamin/SOSD/scripts/data
+
+## 转换为 CSV 格式
+
+使用 `/hdd9/benjamin/SOSD/scripts/data/sosd_to_pg.py` 脚本：
+
+```bash
+cd /hdd9/benjamin/SOSD/scripts/data
+
+# 转换为 CSV（100 万条）
+python sosd_to_pg.py books_200M_uint32 -o books.csv -l 1000000
+
+# 或转换全部数据（2 亿条）
+python3 sosd_to_pg.py books_200M_uint32 -o books_full.csv -l 200000000
+```
+
+#### 15.2.3 将数据复制到 Docker 容器
+
+```bash
+# 复制 100 万条测试数据
+head -n 1000001 /hdd9/benjamin/SOSD/scripts/data/books.csv > /tmp/books_1m.csv
+
+# 复制到 Docker 容器
+docker cp /tmp/books_1m.csv <container_id>:/tmp/books_1m.csv
+```
+
+### 15.3 创建表和导入数据
+
+连接到 PostgreSQL：
+
+```bash
+/code/neurdb-dev/psql/bin/psql -h localhost -U neurdb
+```
+
+在 psql 中执行：
+
+```sql
+-- 1. 创建表
+DROP TABLE IF EXISTS books;
+CREATE TABLE books (
+    id INT PRIMARY KEY,
+    val INT
+);
+
+-- 2. 导入数据
+\copy books FROM '/tmp/books_1m.csv' CSV HEADER;
+
+-- 3. 确认数据量
+SELECT COUNT(*) FROM books;
+```
+
+### 15.4 创建 LIPP 索引
+
+```sql
+-- 开启计时
+\timing on
+
+-- 创建 LIPP 索引
+CREATE INDEX idx_books_val ON books USING nrindex(val);
+```
+
+### 15.5 测试查询
+
+#### 15.5.1 单次查询测试
+
+```sql
+\timing on
+
+-- 查看前几行数据
+SELECT * FROM books LIMIT 5;
+
+-- 点查询（使用实际存在的值）
+SELECT * FROM books WHERE val = (SELECT val FROM books LIMIT 1);
+
+-- 多次查询测试
+SELECT * FROM books WHERE val = (SELECT val FROM books OFFSET 1000 LIMIT 1);
+SELECT * FROM books WHERE val = (SELECT val FROM books OFFSET 2000 LIMIT 1);
+SELECT * FROM books WHERE val = (SELECT val FROM books OFFSET 3000 LIMIT 1);
+```
+
+#### 15.5.2 批量查询测试（1 万次）
+
+**方法 1：SQL 循环**
+
+```sql
+\timing on
+
+DO $$
+DECLARE
+    i INT;
+    v INT;
+    result RECORD;
+BEGIN
+    FOR i IN 1..10000 LOOP
+        SELECT val INTO v FROM books OFFSET floor(random() * 100000)::int LIMIT 1;
+        SELECT * INTO result FROM books WHERE val = v;
+    END LOOP;
+END $$;
+```
+
+**方法 2：使用 pgbench**
+
+```bash
+# 1. 创建查询脚本
+cat > /tmp/test_query.sql << 'EOF'
+\set val random(1, 1000000)
+SELECT * FROM books WHERE val = :val;
+EOF
+
+# 2. 运行 1 万次查询
+/code/neurdb-dev/psql/bin/pgbench -h localhost -U neurdb \
+  -f /tmp/test_query.sql \
+  -c 1 -t 10000 -r neurdb
+```
+
+### 15.6 性能测试结果解读
+
+**pgbench 输出示例：**
+
+```
+transaction type: /tmp/test_query.sql
+scaling factor: 1
+number of clients: 1
+number of transactions per client: 10000
+latency average = 0.5 ms
+tps = 2000.123456 (without initial connection time)
+```
+
+**关键指标：**
+
+| 指标 | 含义 |
+|------|------|
+| `latency average` | 平均查询延迟 |
+| `tps` | 每秒事务数（吞吐量） |
+| `Time` (SQL 循环) | 总执行时间 |
+
+### 15.7 对比测试：LIPP vs B-tree
+
+```sql
+-- 创建 B-tree 索引进行对比
+DROP INDEX IF EXISTS idx_books_val;
+CREATE INDEX idx_books_val_btree ON books USING btree(val);
+
+-- 运行相同的测试
+\timing on
+DO $$
+DECLARE
+    i INT;
+    v INT;
+    result RECORD;
+BEGIN
+    FOR i IN 1..10000 LOOP
+        SELECT val INTO v FROM books OFFSET floor(random() * 100000)::int LIMIT 1;
+        SELECT * INTO result FROM books WHERE val = v;
+    END LOOP;
+END $$;
+
+-- 切换回 LIPP 索引
+DROP INDEX IF EXISTS idx_books_val_btree;
+CREATE INDEX idx_books_val ON books USING nrindex(val);
+```
+
+### 15.8 不同数据量测试
+
+| 数据量 | 用途 | CSV 文件 |
+|--------|------|----------|
+| 100 万 | 功能测试 | `books_1m.csv` |
+| 1000 万 | 性能测试 | `books_10m.csv` |
+| 1 亿 | 完整测试 | `books_100m.csv` |
+
+```bash
+# 生成不同大小的测试文件
+head -n 1000001 /hdd9/benjamin/SOSD/scripts/data/books.csv > /tmp/books_1m.csv
+head -n 10000001 /hdd9/benjamin/SOSD/scripts/data/books.csv > /tmp/books_10m.csv
+head -n 100000001 /hdd9/benjamin/SOSD/scripts/data/books.csv > /tmp/books_100m.csv
+```
+
+### 15.9 调试与日志
+
+LIPP 索引操作会输出日志，查看方式：
+
+```bash
+# 查看 PostgreSQL 日志
+docker logs <container_id> 2>&1 | grep -i lipp
+
+# 或查看 rocks_service 日志
+tail -f /path/to/postgresql/log/*.log | grep -i lipp
+```
+
+**日志示例：**
+
+```
+[LIPP] insert called: key=2147583647, value=4294967296
+[LIPP] insert done
+[LIPP] exists called: key=2147583647
+[LIPP] FOUND
+```
+
+### 15.10 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| 查询返回 0 行 | val 值不存在 | 使用 `SELECT val FROM books LIMIT 1` 获取实际存在的值 |
+| 创建索引崩溃 | LIPP 内存预热 | 确保 `lipp.h` 中内存预热已禁用 |
+| 范围查询不支持 | LIPP 限制 | 仅支持等值查询 (`val = X`) |
+| 删除操作忽略 | LIPP 限制 | 当前实现不支持删除 |
+
+### 15.11 构造测试 SQL：查询表中实际存在的数据
+
+为了保证测试的准确性，查询的值必须是表中实际存在的数据。以下是几种构造测试 SQL 的方法。
+
+#### 15.11.1 关闭 NOTICE 消息
+
+测试前建议关闭提示消息，避免干扰输出：
+
+```sql
+-- 关闭 NOTICE 消息，只显示 WARNING 和 ERROR
+SET client_min_messages = WARNING;
+```
+
+#### 15.11.2 方法 1：预先导出存在的值（pgbench）
+
+```bash
+# 1. 导出表中实际存在的 val 值到文件
+#    -t: 只输出数据（无表头）
+#    -A: 无对齐格式（纯数值，每行一个）
+/code/neurdb-dev/psql/bin/psql -h localhost -U neurdb -t -A -c \
+  "SELECT val FROM test_lipp ORDER BY random() LIMIT 10000;" > /tmp/existing_vals.txt
+
+# 2. 检查导出结果（应该是纯数字，每行一个）
+head -5 /tmp/existing_vals.txt
+# 输出示例：
+# 123456
+# 789012
+# 345678
+# ...
+
+# 3. 生成 pgbench 脚本（每行一个查询）
+while read val; do
+  echo "SELECT * FROM test_lipp WHERE val = $val;"
+done < /tmp/existing_vals.txt > /tmp/test_query.sql
+
+# 4. 检查生成的 SQL 文件（确保格式正确）
+head -5 /tmp/test_query.sql
+# 输出示例：
+# SELECT * FROM test_lipp WHERE val = 123456;
+# SELECT * FROM test_lipp WHERE val = 789012;
+# SELECT * FROM test_lipp WHERE val = 345678;
+# ...
+
+# 5. 用 pgbench 执行
+#    -n: 跳过 vacuum（重要！使用自定义表时必须加此参数）
+#    -t 1: 执行 1 次（文件里已有 10000 条查询）
+#    -r: 显示每条语句的延迟报告
+/code/neurdb-dev/psql/bin/pgbench -h localhost -U neurdb \
+  -n -f /tmp/test_query.sql \
+  -c 1 -t 1 -r neurdb
+```
+
+**注意事项：**
+
+1. **必须加 `-n` 参数**：pgbench 默认会 vacuum `pgbench_*` 表，使用自定义表时需要 `-n` 跳过
+2. **检查生成的文件**：如果文件内容包含 shell 提示符或其他非 SQL 内容，会导致语法错误
+3. **`-t 1` 含义**：由于 SQL 文件里已经有 10000 条查询，`-t 1` 表示执行整个文件 1 次
+
+**常见问题：终端转义字符导致语法错误**
+
+使用 `while read` 生成 SQL 文件时，可能会遇到以下错误：
+
+```
+pgbench: error: client 0 script 0 aborted in command 0 query 0: ERROR: syntax error at or near "
+```
+
+**问题原因：**
+
+VSCode 或其他现代终端会注入转义序列（用于终端集成功能）。使用 `cat -A` 检查文件可以看到：
+
+```bash
+$ cat -A /tmp/test_query.sql | head -3
+^[]633;E;read val;xxx^G^[]633;C^GSELECT * FROM test_lipp WHERE val = 123;$
+SELECT * FROM test_lipp WHERE val = 456;$
+```
+
+第一行包含 `^[]633;...^G` 这些不可见的转义字符，导致 SQL 语法错误。
+
+**解决方案：直接用 PostgreSQL 生成 SQL 文件（推荐）**
+
+```bash
+# 在 PostgreSQL 内部拼接 SQL 语句，避免 shell 处理
+/code/neurdb-dev/psql/bin/psql -h localhost -U neurdb -t -A -c \
+  "SELECT 'SELECT * FROM test_lipp WHERE val = ' || val || ';' FROM test_lipp ORDER BY random() LIMIT 10000;" \
+  > /tmp/test_query.sql
+
+# 检查文件（应该没有转义字符）
+cat -A /tmp/test_query.sql | head -3
+# 正确输出：
+# SELECT * FROM test_lipp WHERE val = 123456;$
+# SELECT * FROM test_lipp WHERE val = 789012;$
+# SELECT * FROM test_lipp WHERE val = 345678;$
+
+# 运行测试
+/code/neurdb-dev/psql/bin/pgbench -h localhost -U neurdb \
+  -n -f /tmp/test_query.sql -c 1 -t 1 -r neurdb
+```
+
+这个方法的优点：
+- 完全在 PostgreSQL 内部生成 SQL 语句
+- 不经过 shell 的 `while read` 循环
+- 避免终端转义字符污染文件
+
+**一条命令完成所有步骤（推荐）：**
+
+```bash
+/code/neurdb-dev/psql/bin/psql -h localhost -U neurdb -t -A -c \
+  "SELECT 'SELECT * FROM test_lipp WHERE val = ' || val || ';' FROM test_lipp ORDER BY random() LIMIT 10000;" \
+  > /tmp/test_query.sql && \
+/code/neurdb-dev/psql/bin/pgbench -h localhost -U neurdb \
+  -n -f /tmp/test_query.sql -c 1 -t 1 -r neurdb
+```
+
+#### 15.11.3 方法 2：SQL 循环（每次随机取值）
+
+```sql
+SET client_min_messages = WARNING;
+\timing on
+
+DO $$
+DECLARE
+    i INT;
+    v INT;
+    result RECORD;
+BEGIN
+    FOR i IN 1..10000 LOOP
+        -- 从表中随机取一个实际存在的 val
+        SELECT val INTO v FROM books OFFSET floor(random() * (SELECT COUNT(*) FROM books))::int LIMIT 1;
+        -- 查询
+        SELECT * INTO result FROM books WHERE val = v;
+    END LOOP;
+END $$;
+```
+
+#### 15.11.4 方法 3：优化的 SQL 循环（预先获取总行数）
+
+```sql
+SET client_min_messages = WARNING;
+\timing on
+
+DO $$
+DECLARE
+    i INT;
+    v INT;
+    result RECORD;
+    total_rows INT;
+BEGIN
+    -- 先获取总行数（只查一次，避免重复计算）
+    SELECT COUNT(*) INTO total_rows FROM books;
+
+    FOR i IN 1..10000 LOOP
+        -- 随机取一个存在的 val
+        SELECT val INTO v FROM books OFFSET floor(random() * total_rows)::int LIMIT 1;
+        -- 查询
+        SELECT * INTO result FROM books WHERE val = v;
+    END LOOP;
+END $$;
+```
+
+#### 15.11.5 方法 4：预加载到数组（推荐，最高效）
+
+```sql
+SET client_min_messages = WARNING;
+\timing on
+
+DO $$
+DECLARE
+    vals INT[];
+    v INT;
+    result RECORD;
+    i INT;
+BEGIN
+    -- 预先随机取 10000 个存在的值，存入数组
+    SELECT array_agg(val) INTO vals
+    FROM (SELECT val FROM books ORDER BY random() LIMIT 10000) t;
+
+    -- 循环查询（直接从数组取值，无需每次访问表）
+    FOR i IN 1..10000 LOOP
+        v := vals[i];
+        SELECT * INTO result FROM books WHERE val = v;
+    END LOOP;
+END $$;
+```
+
+#### 15.11.6 方法对比
+
+| 方法 | 优点 | 缺点 | 推荐场景 |
+|------|------|------|----------|
+| 方法 1 (pgbench) | 标准工具，输出详细 | 需要预处理文件 | 正式性能测试 |
+| 方法 2 (基础循环) | 简单直接 | 每次循环都计算 COUNT | 快速验证 |
+| 方法 3 (优化循环) | 减少 COUNT 开销 | 仍有 OFFSET 开销 | 中等规模测试 |
+| 方法 4 (数组预加载) | 最高效，开销最小 | 内存占用稍高 | **推荐** |
+
+#### 15.11.7 完整测试示例
+
+```sql
+-- 1. 关闭提示消息
+SET client_min_messages = WARNING;
+
+-- 2. 开启计时
+\timing on
+
+-- 3. 执行 10000 次查询（使用方法 4）
+DO $$
+DECLARE
+    vals INT[];
+    v INT;
+    result RECORD;
+    i INT;
+BEGIN
+    SELECT array_agg(val) INTO vals
+    FROM (SELECT val FROM books ORDER BY random() LIMIT 10000) t;
+
+    FOR i IN 1..10000 LOOP
+        v := vals[i];
+        SELECT * INTO result FROM books WHERE val = v;
+    END LOOP;
+END $$;
+
+-- 输出示例：
+-- DO
+-- Time: 3500.123 ms (00:03.500)
+--
+-- 表示 10000 次查询总耗时 3.5 秒，平均每次 0.35 ms
+```
+
+#### 15.11.8 调整查询次数
+
+修改循环次数和数组大小即可：
+
+```sql
+-- 1000 次查询
+SELECT array_agg(val) INTO vals
+FROM (SELECT val FROM books ORDER BY random() LIMIT 1000) t;
+
+FOR i IN 1..1000 LOOP
+    ...
+END LOOP;
+
+-- 100000 次查询
+SELECT array_agg(val) INTO vals
+FROM (SELECT val FROM books ORDER BY random() LIMIT 100000) t;
+
+FOR i IN 1..100000 LOOP
+    ...
+END LOOP;
+```
