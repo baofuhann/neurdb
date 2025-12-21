@@ -1,0 +1,52 @@
+2025-12-18 05:17:44.106 UTC [10078] FATAL:  could not load library "/code/neurdb-dev/psql/lib/postgresql/nram.so": /usr/lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.29' not found (required by /code/neurdb-dev/psql/lib/postgresql/nram.so)
+2025-12-18 05:17:44.107 UTC [10078] LOG:  database system is shut down
+2025-12-18 05:29:35.292 UTC [16700] LOG:  LIPP IndexEngine created
+2025-12-18 05:29:35.292 UTC [16700] LOG:  [NRAM] IndexEngine initialized successfully
+2025-12-18 05:29:35.339 UTC [16700] LOG:  starting NeurDB 0.2-devel on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 7.5.0-3ubuntu1~18.04) 7.5.0, 64-bit
+2025-12-18 05:29:35.340 UTC [16700] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2025-12-18 05:29:35.352 UTC [16700] LOG:  could not bind IPv6 address "::1": Cannot assign requested address
+2025-12-18 05:29:35.371 UTC [16700] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2025-12-18 05:29:35.401 UTC [16706] LOG:  database system was interrupted; last known up at 2025-12-13 12:41:21 UTC
+2025-12-18 05:29:36.570 UTC [16706] LOG:  database system was not properly shut down; automatic recovery in progress
+2025-12-18 05:29:36.597 UTC [16706] LOG:  redo starts at 0/14FF4D0
+2025-12-18 05:29:36.598 UTC [16706] LOG:  invalid record length at 0/14FF5B8: expected at least 24, got 0
+2025-12-18 05:29:36.602 UTC [16706] LOG:  redo done at 0/14FF580 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2025-12-18 05:29:36.612 UTC [16704] LOG:  checkpoint starting: end-of-recovery immediate wait
+2025-12-18 05:29:36.668 UTC [16704] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.021 s, sync=0.001 s, total=0.061 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/14FF5B8, redo lsn=0/14FF5B8
+2025-12-18 05:29:36.690 UTC [16700] LOG:  database system is ready to accept connections
+2025-12-18 06:15:20.032 UTC [16700] LOG:  received fast shutdown request
+2025-12-18 06:15:20.043 UTC [16700] LOG:  aborting any active transactions
+2025-12-18 06:15:20.043 UTC [16738] LOG:  [NRAM] terminate_rocks called, broadcasting CV, setting latch
+2025-12-18 06:15:20.055 UTC [16700] LOG:  background worker "logical replication launcher" (PID 16739) exited with exit code 1
+2025-12-18 06:15:20.170 UTC [16704] LOG:  shutting down
+2025-12-18 06:15:20.183 UTC [16704] LOG:  checkpoint starting: shutdown immediate
+2025-12-18 06:15:20.235 UTC [16704] LOG:  checkpoint complete: wrote 0 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.001 s, total=0.066 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB; lsn=0/14FF668, redo lsn=0/14FF668
+2025-12-18 06:15:20.271 UTC [16700] LOG:  database system is shut down
+2025-12-18 06:20:19.327 UTC [32151] LOG:  LIPP IndexEngine created
+2025-12-18 06:20:19.327 UTC [32151] LOG:  [NRAM] IndexEngine initialized successfully
+2025-12-18 06:20:19.363 UTC [32151] LOG:  starting NeurDB 0.2-devel on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 7.5.0-3ubuntu1~18.04) 7.5.0, 64-bit
+2025-12-18 06:20:19.364 UTC [32151] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2025-12-18 06:20:19.370 UTC [32151] LOG:  could not bind IPv6 address "::1": Cannot assign requested address
+2025-12-18 06:20:19.383 UTC [32151] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2025-12-18 06:20:19.431 UTC [32154] LOG:  database system was shut down at 2025-12-18 06:20:19 UTC
+2025-12-18 06:20:19.467 UTC [32151] LOG:  database system is ready to accept connections
+2025-12-18 06:25:19.529 UTC [32152] LOG:  checkpoint starting: time
+2025-12-18 06:25:19.616 UTC [32152] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.031 s, sync=0.002 s, total=0.087 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/153F550, redo lsn=0/153F518
+2025-12-19 11:48:32.070 UTC [32151] LOG:  received fast shutdown request
+2025-12-19 11:48:32.181 UTC [32151] LOG:  aborting any active transactions
+2025-12-19 11:48:32.181 UTC [32157] LOG:  [NRAM] terminate_rocks called, broadcasting CV, setting latch
+2025-12-19 11:48:32.203 UTC [32151] LOG:  background worker "logical replication launcher" (PID 32158) exited with exit code 1
+2025-12-19 11:48:32.306 UTC [32152] LOG:  shutting down
+2025-12-19 11:48:32.318 UTC [32152] LOG:  checkpoint starting: shutdown immediate
+2025-12-19 11:48:32.362 UTC [32152] LOG:  checkpoint complete: wrote 0 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.001 s, total=0.057 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB; lsn=0/153F600, redo lsn=0/153F600
+2025-12-19 11:48:32.390 UTC [32151] LOG:  database system is shut down
+2025-12-19 11:48:32.533 UTC [32356] LOG:  LIPP IndexEngine created
+2025-12-19 11:48:32.533 UTC [32356] LOG:  [NRAM] IndexEngine initialized successfully
+2025-12-19 11:48:32.567 UTC [32356] LOG:  starting NeurDB 0.2-devel on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 7.5.0-3ubuntu1~18.04) 7.5.0, 64-bit
+2025-12-19 11:48:32.568 UTC [32356] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2025-12-19 11:48:32.574 UTC [32356] LOG:  could not bind IPv6 address "::1": Cannot assign requested address
+2025-12-19 11:48:32.592 UTC [32356] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2025-12-19 11:48:32.630 UTC [32362] LOG:  database system was shut down at 2025-12-19 11:48:32 UTC
+2025-12-19 11:48:32.661 UTC [32356] LOG:  database system is ready to accept connections
+2025-12-19 11:53:32.709 UTC [32360] LOG:  checkpoint starting: time
+2025-12-19 11:53:32.778 UTC [32360] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.023 s, sync=0.002 s, total=0.069 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/153F710, redo lsn=0/153F6D8

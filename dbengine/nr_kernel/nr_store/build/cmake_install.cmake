@@ -98,7 +98,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
      NOT IS_SYMLINK "$ENV{DESTDIR}/code/neurdb-dev/psql/lib/libneurstore_core.so")
     file(RPATH_CHANGE
          FILE "$ENV{DESTDIR}/code/neurdb-dev/psql/lib/libneurstore_core.so"
-         OLD_RPATH "/code/neurdb-dev/psql/lib:/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/onnx/lib:"
+         OLD_RPATH "/code/neurdb-dev/psql/lib:/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/onnx/lib:/usr/lib/gcc/x86_64-linux-gnu/7:"
          NEW_RPATH "/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/onnx/lib")
     if(CMAKE_INSTALL_DO_STRIP)
       execute_process(COMMAND "/usr/bin/strip" "$ENV{DESTDIR}/code/neurdb-dev/psql/lib/libneurstore_core.so")

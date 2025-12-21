@@ -2,7 +2,7 @@ CMakeFiles/neurstore_microservice.dir/src/microservice/ns_micro_utils.c.o: \
  /code/neurdb-dev/dbengine/nr_kernel/nr_store/src/microservice/ns_micro_utils.c \
  /usr/include/stdc-predef.h \
  /code/neurdb-dev/dbengine/nr_kernel/nr_store/include/microservice/ns_micro_utils.h \
- /usr/lib/gcc/x86_64-linux-gnu/11/include/stdint.h /usr/include/stdint.h \
+ /usr/lib/gcc/x86_64-linux-gnu/7/include/stdint.h /usr/include/stdint.h \
  /usr/include/x86_64-linux-gnu/bits/libc-header-start.h \
  /usr/include/features.h /usr/include/x86_64-linux-gnu/sys/cdefs.h \
  /usr/include/x86_64-linux-gnu/bits/wordsize.h \
@@ -14,7 +14,7 @@ CMakeFiles/neurstore_microservice.dir/src/microservice/ns_micro_utils.c.o: \
  /usr/include/x86_64-linux-gnu/bits/wchar.h \
  /usr/include/x86_64-linux-gnu/bits/stdint-intn.h \
  /usr/include/x86_64-linux-gnu/bits/stdint-uintn.h \
- /usr/lib/gcc/x86_64-linux-gnu/11/include/stddef.h \
+ /usr/lib/gcc/x86_64-linux-gnu/7/include/stddef.h \
  /usr/include/arpa/inet.h /usr/include/netinet/in.h \
  /usr/include/x86_64-linux-gnu/sys/socket.h \
  /usr/include/x86_64-linux-gnu/bits/types/struct_iovec.h \

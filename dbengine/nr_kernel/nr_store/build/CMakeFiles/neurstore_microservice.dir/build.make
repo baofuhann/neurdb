@@ -44,10 +44,10 @@ cmake_force:
 SHELL = /bin/sh
 
 # The CMake executable.
-CMAKE_COMMAND = /opt/cmake-3.28.1-linux-x86_64/bin/cmake
+CMAKE_COMMAND = /usr/local/bin/cmake
 
 # The command to remove a file.
-RM = /opt/cmake-3.28.1-linux-x86_64/bin/cmake -E rm -f
+RM = /usr/local/bin/cmake -E rm -f
 
 # Escaping for special characters.
 EQUALS = =
@@ -158,7 +158,7 @@ libneurstore_microservice.so: CMakeFiles/neurstore_microservice.dir/src/microser
 libneurstore_microservice.so: CMakeFiles/neurstore_microservice.dir/build.make
 libneurstore_microservice.so: libneurstore_core.so
 libneurstore_microservice.so: /code/neurdb-dev/psql/lib/libpq.so
-libneurstore_microservice.so: /usr/lib/gcc/x86_64-linux-gnu/11/libgomp.so
+libneurstore_microservice.so: /usr/lib/gcc/x86_64-linux-gnu/7/libgomp.so
 libneurstore_microservice.so: /usr/lib/x86_64-linux-gnu/libpthread.so
 libneurstore_microservice.so: /code/neurdb-dev/dbengine/nr_kernel/nr_store/external/protobuf/protobuf_install/lib/libprotobuf.a
 libneurstore_microservice.so: /code/neurdb-dev/dbengine/nr_kernel/nr_store/external/onnx/lib/libonnxruntime.so

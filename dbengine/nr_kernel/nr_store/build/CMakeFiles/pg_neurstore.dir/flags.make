@@ -6,5 +6,5 @@ C_DEFINES = -Dpg_neurstore_EXPORTS
 
 C_INCLUDES = -I/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/eigen -I/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/onnx/include -I/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/protobuf/protobuf_install/include -I/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/onnx/onnx_protobuf/build -I/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/tokenizers-cpp/build/../include -I/code/neurdb-dev/dbengine/nr_kernel/nr_store/include -I/code/neurdb-dev/psql/include -I/code/neurdb-dev/psql/include/postgresql/server -I/code/neurdb-dev/dbengine/nr_kernel/nr_store/external/hnswlib -isystem /usr/include/opencv
 
-C_FLAGS = -O3 -march=native -mavx2 -mfma -std=gnu17 -fPIC
+C_FLAGS = -O3 -march=native -mavx2 -mfma -fPIC
 

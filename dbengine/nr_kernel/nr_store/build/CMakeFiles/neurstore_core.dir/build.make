@@ -44,10 +44,10 @@ cmake_force:
 SHELL = /bin/sh
 
 # The CMake executable.
-CMAKE_COMMAND = /opt/cmake-3.28.1-linux-x86_64/bin/cmake
+CMAKE_COMMAND = /usr/local/bin/cmake
 
 # The command to remove a file.
-RM = /opt/cmake-3.28.1-linux-x86_64/bin/cmake -E rm -f
+RM = /usr/local/bin/cmake -E rm -f
 
 # Escaping for special characters.
 EQUALS = =
@@ -507,7 +507,7 @@ libneurstore_core.so: /usr/lib/x86_64-linux-gnu/libopencv_text.so.3.2.0
 libneurstore_core.so: /usr/lib/x86_64-linux-gnu/libopencv_ximgproc.so.3.2.0
 libneurstore_core.so: /usr/lib/x86_64-linux-gnu/libopencv_xobjdetect.so.3.2.0
 libneurstore_core.so: /usr/lib/x86_64-linux-gnu/libopencv_xphoto.so.3.2.0
-libneurstore_core.so: /usr/lib/gcc/x86_64-linux-gnu/11/libgomp.so
+libneurstore_core.so: /usr/lib/gcc/x86_64-linux-gnu/7/libgomp.so
 libneurstore_core.so: /usr/lib/x86_64-linux-gnu/libpthread.so
 libneurstore_core.so: /usr/lib/x86_64-linux-gnu/libopencv_video.so.3.2.0
 libneurstore_core.so: /usr/lib/x86_64-linux-gnu/libopencv_viz.so.3.2.0

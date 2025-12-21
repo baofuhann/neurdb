@@ -2800,3 +2800,126 @@ SET enable_indexscan = on;
 SET enable_bitmapscan = on;
 SET enable_seqscan = on;
 ```
+
+## 17. btree 索引调用流程
+
+### 17.1 索引创建调用链
+
+```
+CREATE INDEX ... USING btree
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│ DefineIndex()                           │
+│ src/backend/commands/indexcmds.c        │
+│ - 解析 CREATE INDEX 语句                │
+│ - 确定索引类型和参数                    │
+└──────────────┬──────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────┐
+│ index_create()                          │
+│ src/backend/catalog/index.c             │
+│ - 在系统表中创建索引条目                │
+│ - 分配索引文件                          │
+└──────────────┬──────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────┐
+│ index_build()                           │
+│ src/backend/catalog/index.c             │
+│ - 调用: amroutine->ambuild()            │
+│ - 通过函数指针调用具体 AM 的 build      │
+└──────────────┬──────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────┐
+│ btbuild()                               │
+│ src/backend/access/nbtree/nbtsort.c     │
+│ - 扫描表数据                            │
+│ - 排序并构建 B-tree 结构                │
+└─────────────────────────────────────────┘
+```
+
+### 17.2 btree AM 函数注册
+
+在 `src/backend/access/nbtree/nbtree.c` 中，`bthandler` 函数注册了所有 btree 的操作函数：
+
+```c
+// nbtree.c 第 122 行
+amroutine->ambuild = btbuild;           // 构建索引
+amroutine->ambuildempty = btbuildempty; // 构建空索引
+amroutine->aminsert = btinsert;         // 插入
+amroutine->ambulkdelete = btbulkdelete; // 批量删除
+amroutine->amvacuumcleanup = btvacuumcleanup;  // VACUUM 清理
+amroutine->amcostestimate = btcostestimate;   // 成本估算
+amroutine->ambeginscan = btbeginscan;   // 开始扫描
+amroutine->amrescan = btrescan;         // 重新扫描
+amroutine->amgettuple = btgettuple;     // 获取元组
+amroutine->amendscan = btendscan;       // 结束扫描
+```
+
+### 17.3 btree 关键源码文件
+
+| 文件 | 作用 |
+|------|------|
+| `src/backend/access/nbtree/nbtree.c` | AM 入口，注册 bthandler |
+| `src/backend/access/nbtree/nbtsort.c` | btbuild() 批量构建索引 |
+| `src/backend/access/nbtree/nbtinsert.c` | _bt_doinsert() 插入操作 |
+| `src/backend/access/nbtree/nbtsearch.c` | _bt_search() 查找操作 |
+| `src/backend/access/nbtree/nbtpage.c` | 页面操作 |
+| `src/backend/access/nbtree/nbtutils.c` | 工具函数 |
+
+### 17.4 btree 与 nrindex 架构对比
+
+**btree（原生索引）：**
+```
+┌─────────────────────────────────────┐
+│          PostgreSQL 进程            │
+│  ┌─────────────────────────────┐   │
+│  │     btree 索引代码          │   │
+│  │  (src/backend/access/nbtree)│   │
+│  └──────────────┬──────────────┘   │
+│                 │ 直接内存访问      │
+│                 ▼                   │
+│  ┌─────────────────────────────┐   │
+│  │  共享缓冲区 (shared_buffers) │  │
+│  └──────────────┬──────────────┘   │
+│                 │                   │
+└─────────────────┼───────────────────┘
+                  ▼
+         ┌───────────────┐
+         │   磁盘文件     │
+         └───────────────┘
+```
+
+**nrindex（学习索引）：**
+```
+┌─────────────────────────────────────┐
+│          PostgreSQL 进程            │
+│  ┌─────────────────────────────┐   │
+│  │     nrindex 客户端代码      │   │
+│  └──────────────┬──────────────┘   │
+│                 │ IPC (共享内存)    │
+└─────────────────┼───────────────────┘
+                  ▼
+┌─────────────────────────────────────┐
+│        indexengine 进程             │
+│  ┌─────────────────────────────┐   │
+│  │   LIPP 学习索引实现         │   │
+│  └──────────────┬──────────────┘   │
+│                 ▼                   │
+│  ┌─────────────────────────────┐   │
+│  │      RocksDB                │   │
+│  └─────────────────────────────┘   │
+└─────────────────────────────────────┘
+```
+
+### 17.5 性能差异原因
+
+| 操作 | btree | nrindex |
+|------|-------|---------|
+| 索引查找 | 直接内存访问 | IPC 消息传递 |
+| 数据读取 | 共享缓冲区缓存 | RocksDB 读取 |
+| 进程切换 | 无 | 有 |
+| 通信开销 | 0 | ~1-2ms/次 |
