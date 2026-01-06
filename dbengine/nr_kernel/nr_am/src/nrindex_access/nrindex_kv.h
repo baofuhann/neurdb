@@ -119,6 +119,9 @@ extern bool nrindex_rocks_range_scan(NRIndexKey min_key, NRIndexKey max_key,
                                     NRIndexKey **keys_out, NRIndexValue **values_out,
                                     int *count_out);
 
+/* Bulk load for efficient index building */
+extern void nrindex_rocks_bulk_load(Oid indexOid, int32 *keys, uint64 *values, int count);
+
 /* ------------------------------------------------------------------------
  * Index scan descriptor for nrindex
  * ------------------------------------------------------------------------

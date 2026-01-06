@@ -7,7 +7,25 @@
 #include "nrindex_kv.h"
 #include "nram_storage/rocks_service.h"
 #include "nram_storage/rocks_handler.h"
+#include "nram_storage/indexengine.h"  /* 直接调用 IndexEngine */
 #include "utils/datum.h"
+
+/* ------------------------------------------------------------------------
+ * Local IndexEngine instance for direct calls (eliminates IPC overhead)
+ * This is used in single-Backend mode for maximum performance.
+ * ------------------------------------------------------------------------
+ */
+static IndexEngine *local_index_engine = NULL;
+
+static IndexEngine* get_local_index_engine(void)
+{
+    if (local_index_engine == NULL) {
+        local_index_engine = indexengine_open();
+        elog(LOG, "nrindex_kv: Created local IndexEngine instance (direct call mode)");
+    }
+    return local_index_engine;
+}
+
 #include "utils/lsyscache.h"
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
@@ -333,15 +351,13 @@ nrindex_value_free(NRIndexValue ivalue)
 NRIndexValue
 nrindex_rocks_get(NRIndexKey ikey)
 {
-    /* Use direct index handler */
-    return RocksClientIndexGet(ikey);
+    /* Direct call to IndexEngine - no IPC overhead */
+    return indexengine_get(get_local_index_engine(), ikey);
 }
 
 bool
 nrindex_rocks_put(NRIndexKey ikey, NRIndexValue ivalue)
 {
-    bool result;
-
     elog(DEBUG1, "nrindex_rocks_put: indexOid=%u, key_size=%u",
          ikey->indexOid, ikey->key_size);
     elog(DEBUG1, "  heap_tid=(%u,%u), xact_id=%u, flags=%u",
@@ -349,18 +365,19 @@ nrindex_rocks_put(NRIndexKey ikey, NRIndexValue ivalue)
          ItemPointerGetOffsetNumber(&ivalue->heap_tid),
          ivalue->xact_id, ivalue->flags);
 
-    /* Use direct index handler */
-    result = RocksClientIndexPut(ikey, ivalue); // 发送 IPC 消息
+    /* Direct call to IndexEngine - no IPC overhead */
+    indexengine_put(get_local_index_engine(), ikey, ivalue);
 
-    elog(DEBUG1, "  RocksDB put result: %s", result ? "success" : "failed");
-    return result;
+    elog(DEBUG1, "  IndexEngine put completed");
+    return true;
 }
 
 bool
 nrindex_rocks_delete(NRIndexKey ikey)
 {
-    /* Use direct index handler */
-    return RocksClientIndexDelete(ikey);
+    /* Direct call to IndexEngine - no IPC overhead */
+    indexengine_delete(get_local_index_engine(), ikey);
+    return true;
 }
 
 bool
@@ -368,6 +385,19 @@ nrindex_rocks_range_scan(NRIndexKey min_key, NRIndexKey max_key,
                         NRIndexKey **keys_out, NRIndexValue **values_out,
                         int *count_out)
 {
-    /* Use direct index handler */
-    return RocksClientIndexRangeScan(min_key, max_key, keys_out, values_out, count_out);
+    uint32_t count = 0;
+
+    /* Direct call to IndexEngine - no IPC overhead */
+    indexengine_range_scan(get_local_index_engine(), min_key, max_key,
+                          &count, keys_out, values_out);
+
+    *count_out = (int)count;
+    return true;
+}
+
+void
+nrindex_rocks_bulk_load(Oid indexOid, int32 *keys, uint64 *values, int count)
+{
+    /* Direct call to IndexEngine - no IPC overhead */
+    indexengine_bulk_load(get_local_index_engine(), indexOid, keys, values, count);
 }

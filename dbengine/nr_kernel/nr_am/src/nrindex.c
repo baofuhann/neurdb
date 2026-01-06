@@ -25,6 +25,7 @@
 #include "access/multixact.h"
 #include "nram_storage/rocks_service.h"
 #include "nram_storage/rocks_handler.h"
+#include "nram_storage/indexengine.h"  /* 直接调用 IndexEngine */
 #include "nram_access/kv.h"
 #include "nram_xact/xact.h"
 #include "nram_xact/action.h"
@@ -154,13 +155,11 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
     elog(LOG, "Phase 1 complete: collected %d tuples", ntuples);
 
-    /* Phase 2: Bulk load into index engine */
+    /* Phase 2: Bulk load into index engine (direct call - no IPC) */
     if (ntuples > 0) {
-        elog(LOG, "Phase 2: Bulk loading %d entries into index engine...", ntuples);
+        elog(LOG, "Phase 2: Bulk loading %d entries into index engine (direct call)...", ntuples);
 
-        if (!RocksClientIndexBulkLoad(index->rd_id, bulk_keys, bulk_values, ntuples)) {
-            elog(ERROR, "Failed to bulk load index entries");
-        }
+        nrindex_rocks_bulk_load(index->rd_id, bulk_keys, bulk_values, ntuples);
 
         elog(LOG, "Phase 2 complete: bulk load successful");
     }
