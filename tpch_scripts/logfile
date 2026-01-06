@@ -1,0 +1,240 @@
+2025-12-21 07:23:06.199 UTC [5019] LOG:  starting NeurDB 0.2-devel on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 7.5.0-3ubuntu1~18.04) 7.5.0, 64-bit
+2025-12-21 07:23:06.200 UTC [5019] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2025-12-21 07:23:06.206 UTC [5019] LOG:  could not bind IPv6 address "::1": Cannot assign requested address
+2025-12-21 07:23:06.225 UTC [5019] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2025-12-21 07:23:06.247 UTC [5022] LOG:  database system was shut down at 2025-12-21 07:22:59 UTC
+2025-12-21 07:23:06.269 UTC [5019] LOG:  database system is ready to accept connections
+2025-12-21 07:25:47.986 UTC [5020] LOG:  checkpoint starting: wal
+2025-12-21 07:26:50.515 UTC [5020] LOG:  checkpoint complete: wrote 9106 buffers (55.6%); 0 WAL file(s) added, 0 removed, 33 recycled; write=61.554 s, sync=0.191 s, total=62.529 s; sync files=336, longest=0.029 s, average=0.001 s; distance=537864 kB, estimate=537864 kB; lsn=0/3FF51208, redo lsn=0/222201E0
+2025-12-21 07:26:55.419 UTC [5020] LOG:  checkpoint starting: wal
+2025-12-21 07:27:45.681 UTC [5020] LOG:  checkpoint complete: wrote 7675 buffers (46.8%); 0 WAL file(s) added, 0 removed, 33 recycled; write=49.229 s, sync=0.497 s, total=50.262 s; sync files=11, longest=0.486 s, average=0.046 s; distance=540882 kB, estimate=540882 kB; lsn=0/6100C298, redo lsn=0/43254BA0
+2025-12-21 07:27:50.245 UTC [5020] LOG:  checkpoint starting: wal
+2025-12-21 07:28:06.670 UTC [10928] LOG:  skipping vacuum of "lineitem" --- lock not available
+2025-12-21 07:32:20.204 UTC [5020] LOG:  checkpoint complete: wrote 7722 buffers (47.1%); 0 WAL file(s) added, 0 removed, 33 recycled; write=269.790 s, sync=0.015 s, total=269.959 s; sync files=27, longest=0.005 s, average=0.001 s; distance=538369 kB, estimate=540631 kB; lsn=0/75F9E668, redo lsn=0/640152E8
+2025-12-21 07:42:20.554 UTC [26614] ERROR:  syntax error at or near "(" at character 432
+2025-12-21 07:42:20.554 UTC [26614] STATEMENT:  select
+		l_returnflag,
+		l_linestatus,
+		sum(l_quantity) as sum_qty,
+		sum(l_extendedprice) as sum_base_price,
+		sum(l_extendedprice * (1 - l_discount)) as sum_disc_price,
+		sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) as sum_charge,
+		avg(l_quantity) as avg_qty,
+		avg(l_extendedprice) as avg_price,
+		avg(l_discount) as avg_disc,
+		count(*) as count_order
+	from
+		lineitem
+	where
+		l_shipdate <= date '1998-12-01' - interval '85' day (3)
+	group by
+		l_returnflag,
+		l_linestatus
+	order by
+		l_returnflag,
+		l_linestatus;
+2025-12-21 07:42:20.554 UTC [26614] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:20.554 UTC [26614] STATEMENT:  limit -1;
+2025-12-21 07:42:20.580 UTC [26621] ERROR:  syntax error at or near "(" at character 432
+2025-12-21 07:42:20.580 UTC [26621] STATEMENT:  select
+		l_returnflag,
+		l_linestatus,
+		sum(l_quantity) as sum_qty,
+		sum(l_extendedprice) as sum_base_price,
+		sum(l_extendedprice * (1 - l_discount)) as sum_disc_price,
+		sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) as sum_charge,
+		avg(l_quantity) as avg_qty,
+		avg(l_extendedprice) as avg_price,
+		avg(l_discount) as avg_disc,
+		count(*) as count_order
+	from
+		lineitem
+	where
+		l_shipdate <= date '1998-12-01' - interval '85' day (3)
+	group by
+		l_returnflag,
+		l_linestatus
+	order by
+		l_returnflag,
+		l_linestatus;
+2025-12-21 07:42:20.580 UTC [26621] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:20.580 UTC [26621] STATEMENT:  limit -1;
+2025-12-21 07:42:20.613 UTC [26625] ERROR:  syntax error at or near "(" at character 432
+2025-12-21 07:42:20.613 UTC [26625] STATEMENT:  select
+		l_returnflag,
+		l_linestatus,
+		sum(l_quantity) as sum_qty,
+		sum(l_extendedprice) as sum_base_price,
+		sum(l_extendedprice * (1 - l_discount)) as sum_disc_price,
+		sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) as sum_charge,
+		avg(l_quantity) as avg_qty,
+		avg(l_extendedprice) as avg_price,
+		avg(l_discount) as avg_disc,
+		count(*) as count_order
+	from
+		lineitem
+	where
+		l_shipdate <= date '1998-12-01' - interval '85' day (3)
+	group by
+		l_returnflag,
+		l_linestatus
+	order by
+		l_returnflag,
+		l_linestatus;
+2025-12-21 07:42:20.613 UTC [26625] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:20.613 UTC [26625] STATEMENT:  limit -1;
+2025-12-21 07:42:22.102 UTC [26630] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:22.102 UTC [26630] STATEMENT:  limit 100;
+2025-12-21 07:42:23.167 UTC [26671] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:23.167 UTC [26671] STATEMENT:  limit 100;
+2025-12-21 07:42:24.168 UTC [26697] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:24.168 UTC [26697] STATEMENT:  limit 100;
+2025-12-21 07:42:50.075 UTC [26724] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:50.075 UTC [26724] STATEMENT:  limit 10;
+2025-12-21 07:42:50.659 UTC [27191] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:50.659 UTC [27191] STATEMENT:  limit 10;
+2025-12-21 07:42:51.178 UTC [27214] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:51.178 UTC [27214] STATEMENT:  limit 10;
+2025-12-21 07:42:51.628 UTC [27252] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:51.628 UTC [27252] STATEMENT:  limit -1;
+2025-12-21 07:42:51.893 UTC [27262] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:51.893 UTC [27262] STATEMENT:  limit -1;
+2025-12-21 07:42:52.159 UTC [27271] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:52.159 UTC [27271] STATEMENT:  limit -1;
+2025-12-21 07:42:52.742 UTC [27291] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:52.742 UTC [27291] STATEMENT:  limit -1;
+2025-12-21 07:42:53.283 UTC [27301] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:53.283 UTC [27301] STATEMENT:  limit -1;
+2025-12-21 07:42:53.833 UTC [27323] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:53.833 UTC [27323] STATEMENT:  limit -1;
+2025-12-21 07:42:54.392 UTC [27337] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:54.392 UTC [27337] STATEMENT:  limit -1;
+2025-12-21 07:42:54.892 UTC [27350] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:54.892 UTC [27350] STATEMENT:  limit -1;
+2025-12-21 07:42:55.419 UTC [27363] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:42:55.419 UTC [27363] STATEMENT:  limit -1;
+2025-12-21 07:43:00.091 UTC [27383] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:00.091 UTC [27383] STATEMENT:  limit -1;
+2025-12-21 07:43:03.738 UTC [27486] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:03.738 UTC [27486] STATEMENT:  limit -1;
+2025-12-21 07:43:07.445 UTC [27571] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:07.445 UTC [27571] STATEMENT:  limit -1;
+2025-12-21 07:43:07.780 UTC [27655] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:07.780 UTC [27655] STATEMENT:  limit -1;
+2025-12-21 07:43:08.046 UTC [27671] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:08.046 UTC [27671] STATEMENT:  limit -1;
+2025-12-21 07:43:08.312 UTC [27684] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:08.312 UTC [27684] STATEMENT:  limit -1;
+2025-12-21 07:43:10.494 UTC [27694] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:10.494 UTC [27694] STATEMENT:  limit -1;
+2025-12-21 07:43:12.761 UTC [27734] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:12.761 UTC [27734] STATEMENT:  limit -1;
+2025-12-21 07:43:14.961 UTC [27795] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:14.961 UTC [27795] STATEMENT:  limit -1;
+2025-12-21 07:43:16.151 UTC [27837] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:16.151 UTC [27837] STATEMENT:  limit 20;
+2025-12-21 07:43:17.335 UTC [27881] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:17.335 UTC [27881] STATEMENT:  limit 20;
+2025-12-21 07:43:18.593 UTC [27910] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:18.593 UTC [27910] STATEMENT:  limit 20;
+2025-12-21 07:43:18.870 UTC [27937] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:18.870 UTC [27937] STATEMENT:  limit -1;
+2025-12-21 07:43:19.076 UTC [27945] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:19.076 UTC [27945] STATEMENT:  limit -1;
+2025-12-21 07:43:19.235 UTC [27956] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:19.235 UTC [27956] STATEMENT:  limit -1;
+2025-12-21 07:43:19.816 UTC [27961] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:19.816 UTC [27961] STATEMENT:  limit -1;
+2025-12-21 07:43:20.383 UTC [27974] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:20.383 UTC [27974] STATEMENT:  limit -1;
+2025-12-21 07:43:20.942 UTC [27996] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:20.942 UTC [27996] STATEMENT:  limit -1;
+2025-12-21 07:43:21.925 UTC [28007] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:21.925 UTC [28007] STATEMENT:  limit -1;
+2025-12-21 07:43:22.903 UTC [28038] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:22.903 UTC [28038] STATEMENT:  limit -1;
+2025-12-21 07:43:23.882 UTC [28070] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:23.882 UTC [28070] STATEMENT:  limit -1;
+2025-12-21 07:43:24.143 UTC [28091] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:24.143 UTC [28091] STATEMENT:  limit -1;
+2025-12-21 07:43:24.366 UTC [28110] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:24.366 UTC [28110] STATEMENT:  limit -1;
+2025-12-21 07:43:24.592 UTC [28116] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:24.592 UTC [28116] STATEMENT:  limit -1;
+2025-12-21 07:43:25.402 UTC [28126] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:25.402 UTC [28126] STATEMENT:  limit -1;
+2025-12-21 07:43:26.253 UTC [28148] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:26.253 UTC [28148] STATEMENT:  limit -1;
+2025-12-21 07:43:27.084 UTC [28184] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:27.084 UTC [28184] STATEMENT:  limit -1;
+2025-12-21 07:43:27.455 UTC [28204] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:27.455 UTC [28204] STATEMENT:  limit -1;
+2025-12-21 07:43:27.788 UTC [28223] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:27.788 UTC [28223] STATEMENT:  limit -1;
+2025-12-21 07:43:28.121 UTC [28229] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:28.121 UTC [28229] STATEMENT:  limit -1;
+2025-12-21 07:43:29.081 UTC [28247] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:29.081 UTC [28247] STATEMENT:  limit -1;
+2025-12-21 07:43:29.923 UTC [28266] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:29.923 UTC [28266] STATEMENT:  limit -1;
+2025-12-21 07:43:30.797 UTC [28286] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:30.797 UTC [28286] STATEMENT:  limit -1;
+2025-12-21 07:43:33.928 UTC [28309] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:33.928 UTC [28309] STATEMENT:  limit 100;
+2025-12-21 07:43:37.172 UTC [28385] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:37.172 UTC [28385] STATEMENT:  limit 100;
+2025-12-21 07:43:39.587 UTC [28466] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:39.587 UTC [28466] STATEMENT:  limit 100;
+2025-12-21 07:43:39.717 UTC [28514] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:39.717 UTC [28514] STATEMENT:  limit -1;
+2025-12-21 07:43:39.828 UTC [28520] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:39.828 UTC [28520] STATEMENT:  limit -1;
+2025-12-21 07:43:39.920 UTC [28526] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:39.920 UTC [28526] STATEMENT:  limit -1;
+2025-12-21 07:43:40.745 UTC [28533] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:40.745 UTC [28533] STATEMENT:  limit -1;
+2025-12-21 07:43:41.542 UTC [28560] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:41.542 UTC [28560] STATEMENT:  limit -1;
+2025-12-21 07:43:42.333 UTC [28592] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:42.333 UTC [28592] STATEMENT:  limit -1;
+2025-12-21 07:43:45.289 UTC [28611] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:45.289 UTC [28611] STATEMENT:  limit 100;
+2025-12-21 07:43:48.239 UTC [28677] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:48.239 UTC [28677] STATEMENT:  limit 100;
+2025-12-21 07:43:51.308 UTC [28746] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:51.308 UTC [28746] STATEMENT:  limit 100;
+2025-12-21 07:43:51.537 UTC [28825] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:51.537 UTC [28825] STATEMENT:  limit -1;
+2025-12-21 07:43:51.670 UTC [28836] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:51.670 UTC [28836] STATEMENT:  limit -1;
+2025-12-21 07:43:51.801 UTC [28855] ERROR:  syntax error at or near "limit" at character 1
+2025-12-21 07:43:51.801 UTC [28855] STATEMENT:  limit -1;
+2025-12-21 07:47:50.454 UTC [5020] LOG:  checkpoint starting: time
+2025-12-21 07:47:51.471 UTC [5020] LOG:  checkpoint complete: wrote 1 buffers (0.0%); 0 WAL file(s) added, 0 removed, 17 recycled; write=0.083 s, sync=0.015 s, total=1.018 s; sync files=35, longest=0.001 s, average=0.001 s; distance=294519 kB, estimate=516020 kB; lsn=0/75FB3170, redo lsn=0/75FB3138
+2026-01-06 05:08:49.562 UTC [5020] LOG:  checkpoint starting: time
+2026-01-06 05:09:36.536 UTC [10107] ERROR:  access method "nrindex" does not exist
+2026-01-06 05:09:36.536 UTC [10107] STATEMENT:  CREATE INDEX idx_books_val ON books USING nrindex(val);
+2026-01-06 05:13:19.536 UTC [5020] LOG:  checkpoint complete: wrote 4825 buffers (29.4%); 0 WAL file(s) added, 1 removed, 4 recycled; write=269.378 s, sync=0.016 s, total=269.975 s; sync files=34, longest=0.015 s, average=0.001 s; distance=81064 kB, estimate=472524 kB; lsn=0/7AF262C8, redo lsn=0/7AEDD2A8
+2026-01-06 05:22:37.962 UTC [10107] ERROR:  syntax error at or near "name" at character 72
+2026-01-06 05:22:37.962 UTC [10107] STATEMENT:  SELECT name, default_version, commentFROM pg_available_extensionsWHERE name LIKE '%nr%' OR name LIKE '%nram%' OR name LIKE '%neur%';
+2026-01-06 05:23:20.493 UTC [10107] ERROR:  access method "nram" does not exist
+2026-01-06 05:23:20.493 UTC [10107] STATEMENT:  CREATE TABLE users_nram (
+	    id SERIAL PRIMARY KEY,
+	    name VARCHAR(100),
+	    age INT
+	) USING nram;
+2026-01-06 05:23:49.753 UTC [5020] LOG:  checkpoint starting: time
+2026-01-06 05:24:17.678 UTC [10107] LOG:  LIPP IndexEngine created
+2026-01-06 05:24:17.678 UTC [10107] STATEMENT:  CREATE EXTENSION nram;
+2026-01-06 05:24:17.678 UTC [10107] LOG:  [NRAM] IndexEngine initialized successfully
+2026-01-06 05:24:17.678 UTC [10107] STATEMENT:  CREATE EXTENSION nram;
+2026-01-06 05:25:24.778 UTC [5020] LOG:  checkpoint complete: wrote 950 buffers (5.8%); 0 WAL file(s) added, 0 removed, 0 recycled; write=94.918 s, sync=0.011 s, total=95.025 s; sync files=26, longest=0.006 s, average=0.001 s; distance=353 kB, estimate=425307 kB; lsn=0/7AF676B8, redo lsn=0/7AF35808
+2026-01-06 05:25:40.913 UTC [5019] LOG:  received fast shutdown request
+2026-01-06 05:25:41.033 UTC [5019] LOG:  aborting any active transactions
+2026-01-06 05:25:41.033 UTC [10107] FATAL:  terminating connection due to administrator command
+2026-01-06 05:25:41.033 UTC [6351] FATAL:  terminating connection due to administrator command
+2026-01-06 05:25:41.036 UTC [5019] LOG:  background worker "logical replication launcher" (PID 5025) exited with exit code 1
+2026-01-06 05:25:41.061 UTC [5020] LOG:  shutting down
+2026-01-06 05:25:41.067 UTC [5020] LOG:  checkpoint starting: shutdown immediate
+2026-01-06 05:25:41.250 UTC [5020] LOG:  checkpoint complete: wrote 60 buffers (0.4%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.069 s, sync=0.076 s, total=0.190 s; sync files=48, longest=0.067 s, average=0.002 s; distance=199 kB, estimate=382796 kB; lsn=0/7AF67768, redo lsn=0/7AF67768
+2026-01-06 05:25:41.346 UTC [5019] LOG:  database system is shut down

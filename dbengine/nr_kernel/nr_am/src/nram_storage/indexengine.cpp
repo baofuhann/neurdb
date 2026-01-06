@@ -22,6 +22,7 @@ extern "C" {
 #include <map>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 /* -------------------------------------------------------------------------
  * Key encoding/decoding for LIPP
@@ -182,6 +183,49 @@ public:
             return 0;
         }
         return it->second->index_size();
+    }
+
+    /* Bulk load - much faster than individual inserts for index building */
+    void bulkLoad(Oid indexOid, int32_t* keys, uint64_t* values, int count) {
+        if (count <= 0) {
+            return;
+        }
+
+        elog(LOG, "LIPP: bulkLoad starting, indexOid=%u, count=%d", indexOid, count);
+
+        /* Create sorted array of key-value pairs for LIPP */
+        typedef std::pair<int64_t, uint64_t> KVPair;
+        std::vector<KVPair> pairs;
+        pairs.reserve(count);
+
+        for (int i = 0; i < count; i++) {
+            int64_t encoded_key = encode_lipp_key(keys[i]);
+            pairs.push_back(std::make_pair(encoded_key, values[i]));
+        }
+
+        /* Sort by key (LIPP bulk_load requires sorted data) */
+        std::sort(pairs.begin(), pairs.end(),
+                  [](const KVPair& a, const KVPair& b) {
+                      return a.first < b.first;
+                  });
+
+        /* Remove duplicates (keep last occurrence for each key) */
+        auto last = std::unique(pairs.begin(), pairs.end(),
+                                [](const KVPair& a, const KVPair& b) {
+                                    return a.first == b.first;
+                                });
+        pairs.erase(last, pairs.end());
+
+        elog(LOG, "LIPP: bulkLoad after dedup, unique_count=%zu", pairs.size());
+
+        /* Get or create LIPP instance */
+        LIPP<int64_t, uint64_t>* lipp = getIndex(indexOid);
+
+        /* Call LIPP bulk_load */
+        lipp->bulk_load(pairs.data(), pairs.size());
+
+        elog(LOG, "LIPP: bulkLoad completed, indexOid=%u, loaded=%zu entries",
+             indexOid, pairs.size());
     }
 };
 
@@ -384,6 +428,24 @@ void indexengine_compact(IndexEngine* engine) {
 
     /* No-op for LIPP - it's an in-memory structure */
     elog(DEBUG1, "LIPP IndexEngine: compact is no-op for in-memory index");
+}
+
+void indexengine_bulk_load(IndexEngine* engine,
+                           Oid indexOid,
+                           int32_t* keys,
+                           uint64_t* values,
+                           int count) {
+    if (!engine) {
+        elog(ERROR, "LIPP IndexEngine: null engine pointer");
+        return;
+    }
+
+    try {
+        LIPPIndexEngine* impl = reinterpret_cast<LIPPIndexEngine*>(engine);
+        impl->bulkLoad(indexOid, keys, values, count);
+    } catch (const std::exception& e) {
+        elog(ERROR, "LIPP IndexEngine bulk_load failed: %s", e.what());
+    }
 }
 
 } // extern "C"

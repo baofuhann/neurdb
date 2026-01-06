@@ -40,6 +40,13 @@ void indexengine_range_scan(IndexEngine* engine,
 bool indexengine_exists(IndexEngine* engine, NRIndexKey ikey);
 void indexengine_clear_range(IndexEngine* engine, NRIndexKey start_key, NRIndexKey end_key);
 
+/* Bulk load operations - for efficient index building */
+void indexengine_bulk_load(IndexEngine* engine,
+                           Oid indexOid,
+                           int32_t* keys,
+                           uint64_t* values,
+                           int count);
+
 /* Statistics and maintenance */
 uint64_t indexengine_get_count(IndexEngine* engine, Oid indexOid);
 void indexengine_compact(IndexEngine* engine);

@@ -288,6 +288,9 @@ void *process_request(void *arg) {
         case kv_index_range_scan:
             resp = handle_kv_index_range_scan(msg);
             break;
+        case kv_index_bulk_load:
+            resp = handle_kv_index_bulk_load(msg);
+            break;
         default:
             NRAM_TEST_INFO("[Rocks] Unknown op=%d", msg->header.op);
             break;
@@ -723,6 +726,40 @@ KVMsg *handle_kv_index_range_scan(KVMsg *msg) {
         fflush(f);
         fclose(f);
     }
+
+    return resp;
+}
+
+KVMsg *handle_kv_index_bulk_load(KVMsg *msg) {
+    char *buf = (char *)msg->entity;
+    int count;
+    int32 *keys;
+    uint64 *values;
+    KVMsg *resp;
+    Oid indexOid = msg->header.relId;
+
+    NRAM_TEST_INFO("[IndexEngine] handle_kv_index_bulk_load: indexOid=%u, entitySize=%lu",
+                   indexOid, msg->header.entitySize);
+
+    /* Parse message: [count (4 bytes)] [keys (count * 4 bytes)] [values (count * 8 bytes)] */
+    memcpy(&count, buf, sizeof(int));
+    buf += sizeof(int);
+
+    keys = (int32 *)buf;
+    buf += count * sizeof(int32);
+
+    values = (uint64 *)buf;
+
+    elog(LOG, "[IndexEngine] handle_kv_index_bulk_load: count=%d", count);
+
+    /* Call indexengine bulk load */
+    indexengine_bulk_load(index_engine, indexOid, keys, values, count);
+
+    resp = NewMsg(kv_index_bulk_load, indexOid, kv_status_ok, msg->header.respChannel);
+    resp->header.entitySize = 0;
+    resp->entity = NULL;
+
+    elog(LOG, "[IndexEngine] handle_kv_index_bulk_load: completed successfully");
 
     return resp;
 }

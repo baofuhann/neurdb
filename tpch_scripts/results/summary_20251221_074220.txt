@@ -1,0 +1,34 @@
+TPC-H Benchmark Summary
+========================
+Date: Sun Dec 21 07:43:51 UTC 2025
+Database: tpch_test
+Runs per query: 3
+
+Query | Avg Time (ms)
+------|---------------
+Q1    | 24
+Q2    | 1166
+Q3    | 8988
+Q4    | 310
+Q5    | 543
+Q6    | 513
+Q7    | 3993
+Q8    | 273
+Q9    | 2202
+Q10   | 1195
+Q11   | 199
+Q12   | 553
+Q13   | 964
+Q14   | 220
+Q15   | 815
+Q16   | 328
+Q17   | 876
+Q18   | 2913
+Q19   | 96
+Q20   | 789
+Q21   | 2975
+Q22   | 138
+------|---------------
+Total | 30073 ms
+
+Total execution time: 30073ms (s)

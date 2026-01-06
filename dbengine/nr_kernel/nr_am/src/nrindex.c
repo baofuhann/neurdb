@@ -64,7 +64,7 @@ typedef struct NRIndexBuildState
  */
 
 /*
- * Build a new index.
+ * Build a new index using bulk load for better performance.
  */
 static IndexBuildResult *
 nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
@@ -79,77 +79,101 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
     int nkeys;
     int ntuples = 0;
 
-    elog(NOTICE, "========== NRINDEX BUILD START ==========");
-    elog(NOTICE, "Building index on table: %s (OID: %u)",
+    /* Bulk load data structures */
+    int capacity = 100000;  /* Initial capacity */
+    int32 *bulk_keys;
+    uint64 *bulk_values;
+
+    elog(LOG, "========== NRINDEX BUILD START (BULK LOAD) ==========");
+    elog(LOG, "Building index on table: %s (OID: %u)",
          RelationGetRelationName(heap), heap->rd_id);
-    elog(NOTICE, "Index name: %s (OID: %u)",
+    elog(LOG, "Index name: %s (OID: %u)",
          RelationGetRelationName(index), index->rd_id);
 
     heapTupDesc = RelationGetDescr(heap);
     indexTupDesc = RelationGetDescr(index);
     nkeys = indexInfo->ii_NumIndexKeyAttrs;
 
-    elog(NOTICE, "Number of index key columns: %d", nkeys);
-    for (int i = 0; i < nkeys; i++) {
-        int attrNum = indexInfo->ii_IndexAttrNumbers[i];
-        elog(NOTICE, "  Key column %d: heap attribute number = %d", i, attrNum);
-    }
+    elog(LOG, "Number of index key columns: %d", nkeys);
 
     result = (IndexBuildResult *) palloc(sizeof(IndexBuildResult));
 
-    /*开始扫描堆表（heap table），读取所有数据行来构建索引*/
-    /*Heap（堆表）是 PostgreSQL 存储实际数据行的地方*/
-    /*创建索引时需要. 1 读取堆表中的每一行数据 2. 提取索引列的值 3. 构建索引条目存入 RocksDB*/
-    elog(NOTICE, "Starting heap scan...");
+    /* Allocate bulk load arrays */
+    bulk_keys = (int32 *) palloc(sizeof(int32) * capacity);
+    bulk_values = (uint64 *) palloc(sizeof(uint64) * capacity);
+
+    /* Phase 1: Scan heap and collect all key-value pairs */
+    elog(LOG, "Phase 1: Scanning heap table and collecting data...");
     scan = table_beginscan(heap, SnapshotAny, 0, NULL);
 
-    /* Process each tuple in the heap */
-    /*遍历每一行数据*/
     while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL) {
-        /* Extract index key values from heap tuple */
-        /*对索引列进行遍历 nkeys = 1 (只有1个索引列)*/
-        for (int i = 0; i < nkeys; i++) {
-            int heapAttrNum = indexInfo->ii_IndexAttrNumbers[i];
-            if (heapAttrNum == 0) {
-                /* System column */
-                /*读取每一行的数据，只提取当前索引列的值，其他未被索引的列不读取*/
-                values[i] = heap_getsysattr(heapTuple, heapAttrNum, heapTupDesc, &isnull[i]);
-            } else {
-                /* Regular column */
-                values[i] = heap_getattr(heapTuple, heapAttrNum, heapTupDesc, &isnull[i]);
-            }
+        int heapAttrNum;
+        int32 key_val;
+        uint64 compressed_tid;
+        BlockNumber blk;
+        OffsetNumber off;
+
+        /* Check capacity and expand if needed */
+        if (ntuples >= capacity) {
+            capacity *= 2;
+            bulk_keys = (int32 *) repalloc(bulk_keys, sizeof(int32) * capacity);
+            bulk_values = (uint64 *) repalloc(bulk_values, sizeof(uint64) * capacity);
+            elog(LOG, "Expanded capacity to %d", capacity);
         }
 
-        /* Build index entry using new index structures */
-        NRIndexKey ikey = nrindex_key_create(index->rd_id, values, isnull, nkeys, indexTupDesc);
-        NRIndexValue ivalue = nrindex_value_create(&heapTuple->t_self);
+        /* Extract index key value (assuming single int32 column for now) */
+        heapAttrNum = indexInfo->ii_IndexAttrNumbers[0];
+        values[0] = heap_getattr(heapTuple, heapAttrNum, heapTupDesc, &isnull[0]);
 
-        /* Debug output for each tuple */
-        elog(NOTICE, "Processing tuple #%d: ctid=(%u,%u), key_size=%u, value_len=%d",
-             ntuples + 1,
-             ItemPointerGetBlockNumber(&heapTuple->t_self),
-             ItemPointerGetOffsetNumber(&heapTuple->t_self),
-             ikey->key_size,
-             (int)sizeof(NRIndexValueData));
-
-        /* Store in RocksDB */
-        /*存储函数将索引条目存入 RocksDB*/
-        if (!nrindex_rocks_put(ikey, ivalue)) {
-            elog(ERROR, "Failed to insert index entry during build");
+        if (isnull[0]) {
+            /* Skip NULL values for now */
+            continue;
         }
+
+        /* Get int32 key value */
+        key_val = DatumGetInt32(values[0]);
+
+        /* Compress heap_tid to uint64: high 32 bits = block, low 16 bits = offset */
+        blk = ItemPointerGetBlockNumber(&heapTuple->t_self);
+        off = ItemPointerGetOffsetNumber(&heapTuple->t_self);
+        compressed_tid = ((uint64)blk << 32) | (uint64)off;
+
+        /* Store in bulk arrays */
+        bulk_keys[ntuples] = key_val;
+        bulk_values[ntuples] = compressed_tid;
 
         ntuples++;
-        nrindex_key_free(ikey);
-        nrindex_value_free(ivalue);
+
+        /* Progress logging every 100000 tuples */
+        if (ntuples % 100000 == 0) {
+            elog(LOG, "  Collected %d tuples...", ntuples);
+        }
     }
 
     table_endscan(scan);
 
+    elog(LOG, "Phase 1 complete: collected %d tuples", ntuples);
+
+    /* Phase 2: Bulk load into index engine */
+    if (ntuples > 0) {
+        elog(LOG, "Phase 2: Bulk loading %d entries into index engine...", ntuples);
+
+        if (!RocksClientIndexBulkLoad(index->rd_id, bulk_keys, bulk_values, ntuples)) {
+            elog(ERROR, "Failed to bulk load index entries");
+        }
+
+        elog(LOG, "Phase 2 complete: bulk load successful");
+    }
+
+    /* Clean up */
+    pfree(bulk_keys);
+    pfree(bulk_values);
+
     result->heap_tuples = ntuples;
     result->index_tuples = ntuples;
 
-    elog(NOTICE, "========== NRINDEX BUILD COMPLETE ==========");
-    elog(NOTICE, "Total tuples indexed: %d", ntuples);
+    elog(LOG, "========== NRINDEX BUILD COMPLETE ==========");
+    elog(LOG, "Total tuples indexed: %d", ntuples);
 
     return result;
 }

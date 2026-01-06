@@ -171,6 +171,123 @@ NeurDB 的设计目标是将**自治 AI 能力直接嵌入数据库**，消除�
 
 ---
 
+## 九、Docker 容器管理
+
+### 9.1 查看现有容器
+
+```bash
+docker ps -a
+```
+
+示例输出：
+```
+CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+87f0aea057c8        neurdbimg           "bash"              3 days ago          Up 3 days           5432/tcp            neurdb_dev
+```
+
+### 9.2 创建新容器（挂载目录）
+
+```bash
+# 基本创建命令
+docker run -d \
+  --name index \
+  -v /hdd9/benjamin:/hdd9/benjamin \
+  -p 5433:5432 \
+  neurdbimg \
+  bash -c "tail -f /dev/null"
+```
+
+**参数说明：**
+
+| 参数 | 说明 |
+|------|------|
+| `-d` | 后台运行容器 |
+| `--name neurdb_dev2` | 容器名称 |
+| `-v /hdd9/benjamin:/hdd9/benjamin` | 目录挂载（宿主机路径:容器路径） |
+| `-p 5433:5432` | 端口映射（宿主机端口:容器端口） |
+| `neurdbimg` | 使用的镜像名称 |
+| `bash -c "tail -f /dev/null"` | 保持容器运行的命令 |
+
+### 9.3 多目录挂载
+
+```bash
+docker run -d \
+  --name index \
+  -v /hdd9/benjamin:/hdd9/benjamin \
+  -v /home/benjamin/neurdb:/code/neurdb-dev \
+  -p 5433:5432 \
+  neurdbimg \
+  bash -c "tail -f /dev/null"
+```
+
+### 9.4 进入容器
+
+```bash
+docker exec -it index bash
+```
+
+### 9.5 容器管理命令
+
+```bash
+# 停止容器
+docker stop neurdb_dev2
+
+# 启动容器
+docker start neurdb_dev2
+
+# 删除容器（需先停止）
+docker rm neurdb_dev2
+
+# 查看容器日志
+docker logs neurdb_dev2
+
+# 查看容器详情
+docker inspect neurdb_dev2
+```
+
+### 9.6 数据目录迁移（容器内）
+
+当容器内磁盘空间不足时，可将 PostgreSQL 数据目录迁移到更大的挂载卷：
+
+```bash
+# 1. 停止 PostgreSQL
+/code/neurdb-dev/psql/bin/pg_ctl -D /code/neurdb-dev/psql/data stop
+
+# 2. 创建目标目录
+mkdir -p /hdd9/benjamin/neurdb_data
+
+# 3. 复制数据（保留权限）
+cp -a /code/neurdb-dev/psql/data/. /hdd9/benjamin/neurdb_data/
+
+# 4. 用新路径启动 PostgreSQL
+/code/neurdb-dev/psql/bin/pg_ctl -D /hdd9/benjamin/neurdb_data start
+
+# 5. 验证连接
+/code/neurdb-dev/psql/bin/psql -h localhost -U neurdb -c "SELECT 1;"
+
+# 6. 可选：创建软链接保持兼容
+rm -rf /code/neurdb-dev/psql/data/*
+rmdir /code/neurdb-dev/psql/data
+ln -s /hdd9/benjamin/neurdb_data /code/neurdb-dev/psql/data
+```
+
+### 9.7 初始化新数据目录
+
+如果数据目录损坏或需要全新环境：
+
+```bash
+# 初始化新的数据目录
+/code/neurdb-dev/psql/bin/initdb -D /hdd9/benjamin/neurdb_data -U neurdb
+
+# 启动
+/code/neurdb-dev/psql/bin/pg_ctl -D /hdd9/benjamin/neurdb_data -l logfile start
+
+# 验证
+/code/neurdb-dev/psql/bin/psql -h localhost -U neurdb -c "SELECT 1;"
+```
+
+---
+
 # 执行记录
 
 ## 1. 切换到索引开发分支

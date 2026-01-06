@@ -11,3 +11,6 @@ NRIndexValue RocksClientIndexGet(NRIndexKey ikey);
 bool RocksClientIndexPut(NRIndexKey ikey, NRIndexValue ivalue);
 bool RocksClientIndexDelete(NRIndexKey ikey);
 bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key, NRIndexKey **out_keys, NRIndexValue **out_results, int *out_count);
+
+/* Bulk load for efficient index building */
+bool RocksClientIndexBulkLoad(Oid indexOid, int32 *keys, uint64 *values, int count);

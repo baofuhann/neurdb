@@ -406,3 +406,60 @@ bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key,
     }
     return success;
 }
+
+bool RocksClientIndexBulkLoad(Oid indexOid, int32 *keys, uint64 *values, int count) {
+    KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
+    Size total_len;
+    KVMsg *msg, *resp;
+    bool success;
+    char *ptr;
+
+    NRAM_INFO();
+
+    elog(LOG, "[Client] RocksClientIndexBulkLoad: indexOid=%u, count=%d", indexOid, count);
+
+    /* Message format: [count (4 bytes)] [keys (count * 4 bytes)] [values (count * 8 bytes)] */
+    total_len = sizeof(int) + (count * sizeof(int32)) + (count * sizeof(uint64));
+
+    msg = NewMsg(kv_index_bulk_load, indexOid, kv_status_none, MyProcPid);
+    msg->header.entitySize = total_len;
+    msg->entity = palloc(total_len);
+
+    ptr = msg->entity;
+
+    /* Write count */
+    memcpy(ptr, &count, sizeof(int));
+    ptr += sizeof(int);
+
+    /* Write keys array */
+    memcpy(ptr, keys, count * sizeof(int32));
+    ptr += count * sizeof(int32);
+
+    /* Write values array */
+    memcpy(ptr, values, count * sizeof(uint64));
+
+    if (!KVChannelPushMsg(req_chan, msg, -1)) {
+        elog(WARNING, "RocksClientIndexBulkLoad: message pushing failed.");
+        pfree(msg->entity);
+        pfree(msg);
+        return false;
+    }
+
+    elog(LOG, "[Client] RocksClientIndexBulkLoad: message sent, waiting for response...");
+
+    resp = KVChannelPopMsg(resp_chan, -1);
+    success = resp && resp->header.status == kv_status_ok && resp->header.op == kv_index_bulk_load;
+
+    if (!success) {
+        elog(WARNING, "[NRAM] Rocks INDEX_BULK_LOAD failed");
+    } else {
+        elog(LOG, "[Client] RocksClientIndexBulkLoad: success");
+    }
+
+    pfree(msg->entity);
+    pfree(msg);
+    if (resp) {
+        pfree(resp);
+    }
+    return success;
+}
