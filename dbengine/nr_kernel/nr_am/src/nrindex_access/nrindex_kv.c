@@ -395,6 +395,33 @@ nrindex_rocks_range_scan(NRIndexKey min_key, NRIndexKey max_key,
     return true;
 }
 
+/*
+ * Point lookup - optimized for equality queries (WHERE val = X)
+ * Much faster than range_scan for single key lookup:
+ * - No array allocation
+ * - No result copying
+ * - Direct return of value
+ */
+bool
+nrindex_rocks_point_lookup(NRIndexKey key, NRIndexValue *value_out, bool *found)
+{
+    NRIndexValue result;
+
+    /* Direct call to IndexEngine - no IPC overhead */
+    result = indexengine_get(get_local_index_engine(), key);
+
+    /* indexengine_get returns nullptr if not found */
+    if (result != NULL) {
+        *value_out = result;
+        *found = true;
+    } else {
+        *value_out = NULL;
+        *found = false;
+    }
+
+    return true;
+}
+
 void
 nrindex_rocks_bulk_load(Oid indexOid, int32 *keys, uint64 *values, int count)
 {

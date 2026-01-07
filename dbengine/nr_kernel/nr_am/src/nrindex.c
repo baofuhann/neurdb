@@ -200,8 +200,8 @@ nrindex_insert(Relation index, Datum *values, bool *isnull,
     NRIndexValue ivalue;
     bool result = true;
 
-    elog(NOTICE, ">>> NRINDEX INSERT <<<");
-    elog(NOTICE, "Index: %s (OID: %u), inserting for ctid=(%u,%u)",
+    elog(DEBUG1, ">>> NRINDEX INSERT <<<");
+    elog(DEBUG1, "Index: %s (OID: %u), inserting for ctid=(%u,%u)",
          RelationGetRelationName(index), index->rd_id,
          ItemPointerGetBlockNumber(ht_ctid),
          ItemPointerGetOffsetNumber(ht_ctid));
@@ -210,17 +210,17 @@ nrindex_insert(Relation index, Datum *values, bool *isnull,
     ikey = nrindex_key_create(index->rd_id, values, isnull, indexInfo->ii_NumIndexKeyAttrs, RelationGetDescr(index));
     ivalue = nrindex_value_create(ht_ctid);
 
-    elog(NOTICE, "Created key: indexOid=%u, key_size=%u",
+    elog(DEBUG1, "Created key: indexOid=%u, key_size=%u",
          ikey->indexOid, ikey->key_size);
 
     /* Check for uniqueness if required */
     if (checkUnique != UNIQUE_CHECK_NO) {
-        elog(NOTICE, "Checking uniqueness...");
+        elog(DEBUG1, "Checking uniqueness...");
         NRIndexValue existing_value = nrindex_rocks_get(ikey);
         if (existing_value != NULL) {
             /* Check if it's the same tuple */
             if (!ItemPointerEquals(ht_ctid, &existing_value->heap_tid)) {
-                elog(NOTICE, "Duplicate key found!");
+                elog(DEBUG1, "Duplicate key found!");
                 result = false; /* Duplicate key violation */
             }
             nrindex_value_free(existing_value);
@@ -231,7 +231,7 @@ nrindex_insert(Relation index, Datum *values, bool *isnull,
         if (!nrindex_rocks_put(ikey, ivalue)) {
             elog(ERROR, "Failed to insert index entry");
         }
-        elog(NOTICE, "Insert successful!");
+        elog(DEBUG1, "Insert successful!");
     }
 
     nrindex_key_free(ikey);
@@ -308,10 +308,10 @@ nrindex_beginscan(Relation r, int nkeys, int norderbys)
 {
     NRIndexScanDesc scan;
 
-    elog(NOTICE, "========== NRINDEX BEGINSCAN ==========");
-    elog(NOTICE, "Index: %s (OID: %u)", RelationGetRelationName(r), r->rd_id);
-    elog(NOTICE, "Number of scan keys: %d", nkeys);
-    elog(NOTICE, "Number of order by keys: %d", norderbys);
+    elog(DEBUG1, "========== NRINDEX BEGINSCAN ==========");
+    elog(DEBUG1, "Index: %s (OID: %u)", RelationGetRelationName(r), r->rd_id);
+    elog(DEBUG1, "Number of scan keys: %d", nkeys);
+    elog(DEBUG1, "Number of order by keys: %d", norderbys);
 
     scan = (NRIndexScanDesc) RelationGetIndexScan(r, nkeys, norderbys);
     scan->min_key = NULL;
@@ -322,8 +322,14 @@ nrindex_beginscan(Relation r, int nkeys, int norderbys)
     scan->cursor = 0;
     scan->is_range_scan = false;
     scan->is_null_scan = false;
+    /* Point query optimization fields */
+    scan->is_point_query = false;
+    scan->point_key = NULL;
+    scan->point_result = NULL;
+    scan->point_found = false;
+    scan->point_returned = false;
 
-    elog(NOTICE, "Scan descriptor initialized");
+    elog(DEBUG1, "Scan descriptor initialized");
 
     return (IndexScanDesc) scan;
 }
@@ -337,22 +343,22 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 {
     NRIndexScanDesc nrscan = (NRIndexScanDesc) scan;
 
-    elog(NOTICE, "========== NRINDEX RESCAN ==========");
-    elog(NOTICE, "Number of scan keys: %d", nscankeys);
+    elog(DEBUG1, "========== NRINDEX RESCAN ==========");
+    elog(DEBUG1, "Number of scan keys: %d", nscankeys);
 
     /* 打印每个 scankey 的信息 */
     for (int i = 0; i < nscankeys; i++) {
-        elog(NOTICE, "  ScanKey[%d]:", i);
-        elog(NOTICE, "    sk_attno = %d (which column)", scankey[i].sk_attno);
-        elog(NOTICE, "    sk_strategy = %d (1:<, 2:<=, 3:=, 4:>=, 5:>)",
+        elog(DEBUG1, "  ScanKey[%d]:", i);
+        elog(DEBUG1, "    sk_attno = %d (which column)", scankey[i].sk_attno);
+        elog(DEBUG1, "    sk_strategy = %d (1:<, 2:<=, 3:=, 4:>=, 5:>)",
              scankey[i].sk_strategy);
-        elog(NOTICE, "    sk_flags = %d", scankey[i].sk_flags);
+        elog(DEBUG1, "    sk_flags = %d", scankey[i].sk_flags);
         /* 尝试打印查询值（假设是 int4） */
         if (!(scankey[i].sk_flags & SK_ISNULL)) {
-            elog(NOTICE, "    sk_argument = %d (search value)",
+            elog(DEBUG1, "    sk_argument = %d (search value)",
                  DatumGetInt32(scankey[i].sk_argument));
         } else {
-            elog(NOTICE, "    sk_argument = NULL");
+            elog(DEBUG1, "    sk_argument = NULL");
         }
     }
 
@@ -376,7 +382,7 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
     */
     if (nscankeys > 0 && scankey[0].sk_flags & SK_ISNULL) {
         /* Handle IS NULL scan */
-        elog(NOTICE, "Scan type: IS NULL scan");
+        elog(DEBUG1, "Scan type: IS NULL scan");
         nrscan->is_range_scan = false;
         nrscan->is_null_scan = true;
         /* TODO: Implement NULL handling */
@@ -403,23 +409,24 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
             }
         }
 
-        elog(NOTICE, "Building search key: indexOid=%u, nscankeys=%d", indexOid, nscankeys);
+        elog(DEBUG1, "Building search key: indexOid=%u, nscankeys=%d", indexOid, nscankeys);
 
         /* 根据操作符类型构建 key
            BTEqualStrategyNumber=3, BTLessStrategyNumber=1, BTLessEqualStrategyNumber=2,
            BTGreaterEqualStrategyNumber=4, BTGreaterStrategyNumber=5 */
         switch (scankey[0].sk_strategy) {
             case BTEqualStrategyNumber:  /* = 等值查询 */
-                elog(NOTICE, "Strategy: EQUAL (=)");
-                /* min_key = max_key = 查询值 */
-                nrscan->min_key = nrindex_key_create(indexOid, values, isnull,
-                                                      nscankeys, indexTupDesc);
-                nrscan->max_key = nrindex_key_copy(nrscan->min_key);
+                elog(DEBUG1, "Strategy: EQUAL (=) - using point lookup optimization");
+                /* Use optimized point lookup instead of range scan */
+                nrscan->is_point_query = true;
+                nrscan->point_key = nrindex_key_create(indexOid, values, isnull,
+                                                        nscankeys, indexTupDesc);
+                nrscan->point_returned = false;
                 break;
 
             case BTLessStrategyNumber:      /* < */
             case BTLessEqualStrategyNumber: /* <= */
-                elog(NOTICE, "Strategy: LESS (<) or LESS_EQUAL (<=)");
+                elog(DEBUG1, "Strategy: LESS (<) or LESS_EQUAL (<=)");
                 /* min_key = NULL (从头开始), max_key = 查询值 */
                 nrscan->min_key = NULL;
                 nrscan->max_key = nrindex_key_create(indexOid, values, isnull,
@@ -428,7 +435,7 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
             case BTGreaterStrategyNumber:      /* > */
             case BTGreaterEqualStrategyNumber: /* >= */
-                elog(NOTICE, "Strategy: GREATER (>) or GREATER_EQUAL (>=)");
+                elog(DEBUG1, "Strategy: GREATER (>) or GREATER_EQUAL (>=)");
                 /* min_key = 查询值, max_key = NULL (到结尾) */
                 nrscan->min_key = nrindex_key_create(indexOid, values, isnull,
                                                       nscankeys, indexTupDesc);
@@ -436,7 +443,7 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
                 break;
 
             default:
-                elog(NOTICE, "Unknown strategy: %d", scankey[0].sk_strategy);
+                elog(DEBUG1, "Unknown strategy: %d", scankey[0].sk_strategy);
                 nrscan->min_key = NULL;
                 nrscan->max_key = NULL;
                 break;
@@ -445,30 +452,45 @@ nrindex_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
         pfree(values);
         pfree(isnull);
 
-        nrscan->is_range_scan = true;
         nrscan->is_null_scan = false;
 
-        elog(NOTICE, "Calling nrindex_rocks_range_scan: min_key=%s, max_key=%s",
-             nrscan->min_key ? "SET" : "NULL",
-             nrscan->max_key ? "SET" : "NULL");
+        if (nrscan->is_point_query) {
+            /* Optimized path: use point lookup for equality queries */
+            elog(DEBUG1, "Using point lookup optimization");
 
-        /* Perform range scan using new index functions */
-        if (!nrindex_rocks_range_scan(nrscan->min_key, nrscan->max_key,
-                                     &nrscan->results_key, &nrscan->results,
-                                     &nrscan->result_count)) {
-            elog(NOTICE, "Range scan returned no results or failed");
+            nrindex_rocks_point_lookup(nrscan->point_key,
+                                       &nrscan->point_result,
+                                       &nrscan->point_found);
+
+            elog(DEBUG1, "Point lookup found=%d", nrscan->point_found);
+            nrscan->is_range_scan = false;
+        } else {
+            /* Range scan path for <, <=, >, >= operators */
+            nrscan->is_range_scan = true;
+            nrscan->is_point_query = false;
+
+            elog(DEBUG1, "Calling nrindex_rocks_range_scan: min_key=%s, max_key=%s",
+                 nrscan->min_key ? "SET" : "NULL",
+                 nrscan->max_key ? "SET" : "NULL");
+
+            /* Perform range scan using new index functions */
+            if (!nrindex_rocks_range_scan(nrscan->min_key, nrscan->max_key,
+                                         &nrscan->results_key, &nrscan->results,
+                                         &nrscan->result_count)) {
+                elog(DEBUG1, "Range scan returned no results or failed");
+            }
+            elog(DEBUG1, "Range scan result_count = %d", nrscan->result_count);
         }
-        elog(NOTICE, "Range scan result_count = %d", nrscan->result_count);
     } else {
         /*
             情况 3: nscankeys == 0
             没有 WHERE 条件，全表扫描
             SELECT * FROM test_idx;
         */
-        elog(NOTICE, "No scan keys provided - full scan");
+        elog(DEBUG1, "No scan keys provided - full scan");
     }
 
-    elog(NOTICE, "========== NRINDEX RESCAN END ==========");
+    elog(DEBUG1, "========== NRINDEX RESCAN END ==========");
 }
 
 /*
@@ -479,17 +501,40 @@ nrindex_gettuple(IndexScanDesc scan, ScanDirection direction)
 {
     NRIndexScanDesc nrscan = (NRIndexScanDesc) scan;
 
-    elog(NOTICE, ">>> NRINDEX GETTUPLE <<<");
-    elog(NOTICE, "cursor=%d, result_count=%d", nrscan->cursor, nrscan->result_count);
+    elog(DEBUG1, ">>> NRINDEX GETTUPLE <<<");
 
     if (direction != ForwardScanDirection) {
         elog(WARNING, "nrindex only supports forward scan");
         return false;
     }
 
+    /* Handle point query (equality lookup) - optimized path */
+    if (nrscan->is_point_query) {
+        elog(DEBUG1, "Point query path: found=%d, returned=%d",
+             nrscan->point_found, nrscan->point_returned);
+
+        if (!nrscan->point_found || nrscan->point_returned) {
+            elog(DEBUG1, "Point query: no more results");
+            return false;
+        }
+
+        /* Return the single result */
+        scan->xs_heaptid = nrscan->point_result->heap_tid;
+
+        elog(DEBUG1, "Point query found: heap_tid=(%u,%u)",
+             ItemPointerGetBlockNumber(&nrscan->point_result->heap_tid),
+             ItemPointerGetOffsetNumber(&nrscan->point_result->heap_tid));
+
+        nrscan->point_returned = true;
+        return true;
+    }
+
+    /* Handle range scan - original path */
+    elog(DEBUG1, "Range scan path: cursor=%d, result_count=%d",
+         nrscan->cursor, nrscan->result_count);
+
     if (nrscan->cursor >= nrscan->result_count) {
-        elog(NOTICE, "No more results (cursor >= result_count)");
-        elog(NOTICE, "Returning false - scan complete");
+        elog(DEBUG1, "No more results (cursor >= result_count)");
         return false;
     }
 
@@ -500,11 +545,10 @@ nrindex_gettuple(IndexScanDesc scan, ScanDirection direction)
     /* Set the tuple identifier */
     scan->xs_heaptid = ivalue->heap_tid;
 
-    elog(NOTICE, "Found result[%d]: heap_tid=(%u,%u)",
+    elog(DEBUG1, "Found result[%d]: heap_tid=(%u,%u)",
          nrscan->cursor,
          ItemPointerGetBlockNumber(&ivalue->heap_tid),
          ItemPointerGetOffsetNumber(&ivalue->heap_tid));
-    elog(NOTICE, "Returning true - PostgreSQL will fetch row at this ctid");
 
     nrscan->cursor++;
 
@@ -519,15 +563,24 @@ nrindex_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
     NRIndexScanDesc nrscan = (NRIndexScanDesc) scan;
     int64 ntids = 0;
-    
-    /* Add all matching TIDs to bitmap */
+
+    /* Handle point query (equality lookup) - optimized path */
+    if (nrscan->is_point_query) {
+        if (nrscan->point_found && nrscan->point_result != NULL) {
+            tbm_add_tuples(tbm, &nrscan->point_result->heap_tid, 1, false);
+            ntids = 1;
+        }
+        return ntids;
+    }
+
+    /* Add all matching TIDs to bitmap - range scan path */
     for (int i = 0; i < nrscan->result_count; i++) {
         NRIndexValue ivalue = nrscan->results[i];
-        
+
         tbm_add_tuples(tbm, &ivalue->heap_tid, 1, false);
         ntids++;
     }
-    
+
     return ntids;
 }
 
@@ -539,13 +592,13 @@ nrindex_endscan(IndexScanDesc scan)
 {
     NRIndexScanDesc nrscan = (NRIndexScanDesc) scan;
 
-    elog(NOTICE, "========== NRINDEX ENDSCAN ==========");
-    elog(NOTICE, "Ending index scan, cleaning up resources");
-    elog(NOTICE, "  result_count = %d", nrscan->result_count);
+    elog(DEBUG1, "========== NRINDEX ENDSCAN ==========");
+    elog(DEBUG1, "Ending index scan, cleaning up resources");
+    elog(DEBUG1, "  result_count = %d", nrscan->result_count);
 
     /* Free scan results */
     if (nrscan->results_key) {
-        elog(NOTICE, "  Freeing %d result key-value pairs", nrscan->result_count);
+        elog(DEBUG1, "  Freeing %d result key-value pairs", nrscan->result_count);
         for (int i = 0; i < nrscan->result_count; i++) {
             nrindex_key_free(nrscan->results_key[i]);
             nrindex_value_free(nrscan->results[i]);
@@ -555,15 +608,15 @@ nrindex_endscan(IndexScanDesc scan)
     }
 
     if (nrscan->min_key) {
-        elog(NOTICE, "  Freeing min_key");
+        elog(DEBUG1, "  Freeing min_key");
         nrindex_key_free(nrscan->min_key);
     }
     if (nrscan->max_key) {
-        elog(NOTICE, "  Freeing max_key");
+        elog(DEBUG1, "  Freeing max_key");
         nrindex_key_free(nrscan->max_key);
     }
 
-    elog(NOTICE, "========== NRINDEX ENDSCAN DONE ==========");
+    elog(DEBUG1, "========== NRINDEX ENDSCAN DONE ==========");
 }
 
 /*

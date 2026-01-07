@@ -119,6 +119,9 @@ extern bool nrindex_rocks_range_scan(NRIndexKey min_key, NRIndexKey max_key,
                                     NRIndexKey **keys_out, NRIndexValue **values_out,
                                     int *count_out);
 
+/* Point lookup - optimized for equality queries (WHERE val = X) */
+extern bool nrindex_rocks_point_lookup(NRIndexKey key, NRIndexValue *value_out, bool *found);
+
 /* Bulk load for efficient index building */
 extern void nrindex_rocks_bulk_load(Oid indexOid, int32 *keys, uint64 *values, int count);
 
@@ -136,6 +139,12 @@ typedef struct NRIndexScanDescData {
     int cursor;                    /* Current position in results */
     bool is_range_scan;            /* Whether this is a range scan */
     bool is_null_scan;             /* Whether this is scanning for NULLs */
+    /* Point query optimization fields */
+    bool is_point_query;           /* Whether this is an equality query */
+    NRIndexKey point_key;          /* Key for point lookup */
+    NRIndexValue point_result;     /* Result of point lookup */
+    bool point_found;              /* Whether point lookup found a result */
+    bool point_returned;           /* Whether point result has been returned */
 } NRIndexScanDescData;
 
 typedef NRIndexScanDescData *NRIndexScanDesc;
