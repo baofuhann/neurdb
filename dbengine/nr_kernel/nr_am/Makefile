@@ -29,7 +29,7 @@ PGFILEDESC = "nram - CCaaLF custom table access method"
 # Link to RocksDB C API for table storage
 PG_CPPFLAGS += -I/usr/local/include -I./src/
 # C++ flags for indexengine (map-based, no RocksDB needed)
-PG_CXXFLAGS += -std=c++11 -I./src/
+PG_CXXFLAGS += -std=c++17 -march=native -I./src/
 # Link RocksDB for table storage and C++ standard library for indexengine
 SHLIB_LINK += -L/usr/local/lib -lrocksdb -lstdc++ -Wl,-rpath,/usr/local/lib
 

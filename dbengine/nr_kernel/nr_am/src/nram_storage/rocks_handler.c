@@ -407,7 +407,7 @@ bool RocksClientIndexRangeScan(NRIndexKey start_key, NRIndexKey end_key,
     return success;
 }
 
-bool RocksClientIndexBulkLoad(Oid indexOid, int32 *keys, uint64 *values, int count) {
+bool RocksClientIndexBulkLoad(Oid indexOid, int64 *keys, uint64 *values, int count) {
     KVChannel *req_chan = GetServerChannel(), *resp_chan = GetRespChannel();
     Size total_len;
     KVMsg *msg, *resp;
@@ -418,8 +418,8 @@ bool RocksClientIndexBulkLoad(Oid indexOid, int32 *keys, uint64 *values, int cou
 
     elog(LOG, "[Client] RocksClientIndexBulkLoad: indexOid=%u, count=%d", indexOid, count);
 
-    /* Message format: [count (4 bytes)] [keys (count * 4 bytes)] [values (count * 8 bytes)] */
-    total_len = sizeof(int) + (count * sizeof(int32)) + (count * sizeof(uint64));
+    /* Message format: [count (4 bytes)] [keys (count * 8 bytes)] [values (count * 8 bytes)] */
+    total_len = sizeof(int) + (count * sizeof(int64)) + (count * sizeof(uint64));
 
     msg = NewMsg(kv_index_bulk_load, indexOid, kv_status_none, MyProcPid);
     msg->header.entitySize = total_len;
@@ -432,8 +432,8 @@ bool RocksClientIndexBulkLoad(Oid indexOid, int32 *keys, uint64 *values, int cou
     ptr += sizeof(int);
 
     /* Write keys array */
-    memcpy(ptr, keys, count * sizeof(int32));
-    ptr += count * sizeof(int32);
+    memcpy(ptr, keys, count * sizeof(int64));
+    ptr += count * sizeof(int64);
 
     /* Write values array */
     memcpy(ptr, values, count * sizeof(uint64));

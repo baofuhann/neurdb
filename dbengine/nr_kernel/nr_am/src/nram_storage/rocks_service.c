@@ -733,7 +733,7 @@ KVMsg *handle_kv_index_range_scan(KVMsg *msg) {
 KVMsg *handle_kv_index_bulk_load(KVMsg *msg) {
     char *buf = (char *)msg->entity;
     int count;
-    int32 *keys;
+    int64 *keys;
     uint64 *values;
     KVMsg *resp;
     Oid indexOid = msg->header.relId;
@@ -741,12 +741,12 @@ KVMsg *handle_kv_index_bulk_load(KVMsg *msg) {
     NRAM_TEST_INFO("[IndexEngine] handle_kv_index_bulk_load: indexOid=%u, entitySize=%lu",
                    indexOid, msg->header.entitySize);
 
-    /* Parse message: [count (4 bytes)] [keys (count * 4 bytes)] [values (count * 8 bytes)] */
+    /* Parse message: [count (4 bytes)] [keys (count * 8 bytes)] [values (count * 8 bytes)] */
     memcpy(&count, buf, sizeof(int));
     buf += sizeof(int);
 
-    keys = (int32 *)buf;
-    buf += count * sizeof(int32);
+    keys = (int64 *)buf;
+    buf += count * sizeof(int64);
 
     values = (uint64 *)buf;
 

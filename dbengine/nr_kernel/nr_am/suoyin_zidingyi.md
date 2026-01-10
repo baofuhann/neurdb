@@ -2288,6 +2288,21 @@ python3 sosd_to_pg.py books_200M_uint32 -o books_full.csv -l 200000000
 # 复制 100 万条测试数据
 head -n 1000001 /hdd9/benjamin/SOSD/scripts/data/books.csv > /tmp/books_1m.csv
 
+# 第二种方式：分为构造数据集和插入数据集
+# 设置参数
+TOTAL=1000000        # 总数据量
+BULK_LOAD=900000     # 批量加载的数据量 (90%)
+INSERT_TEST=100000   # 用于插入测试的数据量 (10%)
+
+# 保留 header
+head -1 /hdd9/benjamin/SOSD/scripts/data/books.csv > /tmp/books_bulk.csv
+head -1 /hdd9/benjamin/SOSD/scripts/data/books.csv > /tmp/books_insert.csv
+
+# 方式2: 随机划分 (随机打乱后划分)
+tail -n +2 /hdd9/benjamin/SOSD/scripts/data/books.csv | shuf > /tmp/books_shuffled.csv
+head -n $BULK_LOAD /tmp/books_shuffled.csv >> /tmp/books_bulk.csv
+tail -n +$((BULK_LOAD + 1)) /tmp/books_shuffled.csv | head -n $INSERT_TEST >> /tmp/books_insert.csv
+
 # 复制到 Docker 容器
 docker cp /tmp/books_1m.csv <container_id>:/tmp/books_1m.csv
 ```

@@ -423,7 +423,7 @@ nrindex_rocks_point_lookup(NRIndexKey key, NRIndexValue *value_out, bool *found)
 }
 
 void
-nrindex_rocks_bulk_load(Oid indexOid, int32 *keys, uint64 *values, int count)
+nrindex_rocks_bulk_load(Oid indexOid, int64 *keys, uint64 *values, int count)
 {
     /* Direct call to IndexEngine - no IPC overhead */
     indexengine_bulk_load(get_local_index_engine(), indexOid, keys, values, count);

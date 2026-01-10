@@ -122,8 +122,8 @@ extern bool nrindex_rocks_range_scan(NRIndexKey min_key, NRIndexKey max_key,
 /* Point lookup - optimized for equality queries (WHERE val = X) */
 extern bool nrindex_rocks_point_lookup(NRIndexKey key, NRIndexValue *value_out, bool *found);
 
-/* Bulk load for efficient index building */
-extern void nrindex_rocks_bulk_load(Oid indexOid, int32 *keys, uint64 *values, int count);
+/* Bulk load for efficient index building (supports INT and BIGINT) */
+extern void nrindex_rocks_bulk_load(Oid indexOid, int64 *keys, uint64 *values, int count);
 
 /* ------------------------------------------------------------------------
  * Index scan descriptor for nrindex

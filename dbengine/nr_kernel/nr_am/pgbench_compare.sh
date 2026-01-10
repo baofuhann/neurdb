@@ -7,9 +7,8 @@ PGBENCH="/code/neurdb-dev/psql/bin/pgbench -h /tmp -d neurdb"
 QUERY_COUNT=100000
 
 echo "=============================================="
-echo "pgbench 索引性能对比测试"
 echo "查询数量: $QUERY_COUNT"
-echo "测试项目: 无索引 / nrindex (LIPP) / B-tree"
+echo "测试项目: nrindex (ALEX) / B-tree"
 echo "=============================================="
 
 # 生成测试查询文件
@@ -23,7 +22,7 @@ ORDER BY random()
 LIMIT $QUERY_COUNT;
 " > /tmp/queries_raw.sql
 
-# 创建带索引的测试文件 (禁用 seqscan)
+
 cat > /tmp/pgbench_with_index.sql << 'EOF'
 SET enable_seqscan = off;
 SET max_parallel_workers_per_gather = 0;
@@ -57,11 +56,20 @@ echo "查询数量: $(wc -l < /tmp/queries_raw.sql)"
 # $PGBENCH -n -f /tmp/pgbench_no_index.sql -c 1 -t 1 2>/dev/null
 
 # ============================================
-# 测试 2: nrindex (LIPP)
+# 清理旧索引
+# ============================================
+echo ""
+echo "Step 2: 清理旧索引..."
+$PSQL -c "DROP INDEX IF EXISTS idx_books_val;" 2>/dev/null
+$PSQL -c "DROP INDEX IF EXISTS idx_books_val_btree;" 2>/dev/null
+echo "清理完成"
+
+# ============================================
+# 测试 2: nrindex
 # ============================================
 echo ""
 echo "=============================================="
-echo "Benchmark 2: nrindex (LIPP)"
+echo "Benchmark 2: nrindex"
 echo "=============================================="
 
 echo "创建 nrindex 索引..."
@@ -88,23 +96,6 @@ echo ""
 echo "运行 pgbench 测试..."
 $PGBENCH -n -f /tmp/pgbench_with_index.sql -c 1 -t 1 2>/dev/null
 
-# ============================================
-# 清理并恢复
-# ============================================
-echo ""
-echo "=============================================="
-echo "测试完成，恢复 nrindex 索引"
-echo "=============================================="
-$PSQL -c "DROP INDEX IF EXISTS idx_books_val_btree;" 2>/dev/null
-$PSQL -c "CREATE INDEX idx_books_val ON books USING nrindex(val);" 2>/dev/null
 
 # 清理临时文件
 rm -f /tmp/queries_raw.sql /tmp/pgbench_with_index.sql /tmp/pgbench_no_index.sql
-
-echo ""
-echo "=============================================="
-echo "结果说明:"
-echo "  latency average = 总延迟 (越小越好)"
-echo "  tps = 每秒事务数 (越大越好)"
-echo "  单次查询延迟 = latency / $QUERY_COUNT"
-echo "=============================================="

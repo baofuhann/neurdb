@@ -82,8 +82,10 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
     /* Bulk load data structures */
     int capacity = 100000;  /* Initial capacity */
-    int32 *bulk_keys;
+    int64 *bulk_keys;
     uint64 *bulk_values;
+    Oid key_type_oid;
+    bool is_bigint;
 
     elog(LOG, "========== NRINDEX BUILD START (BULK LOAD) ==========");
     elog(LOG, "Building index on table: %s (OID: %u)",
@@ -99,8 +101,17 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
     result = (IndexBuildResult *) palloc(sizeof(IndexBuildResult));
 
+    /* Determine key type (INT or BIGINT) */
+    {
+        int heapAttrNum = indexInfo->ii_IndexAttrNumbers[0];
+        Form_pg_attribute attr = TupleDescAttr(heapTupDesc, heapAttrNum - 1);
+        key_type_oid = attr->atttypid;
+        is_bigint = (key_type_oid == INT8OID);
+        elog(LOG, "Key column type: %s (OID: %u)", is_bigint ? "BIGINT" : "INT", key_type_oid);
+    }
+
     /* Allocate bulk load arrays */
-    bulk_keys = (int32 *) palloc(sizeof(int32) * capacity);
+    bulk_keys = (int64 *) palloc(sizeof(int64) * capacity);
     bulk_values = (uint64 *) palloc(sizeof(uint64) * capacity);
 
     /* Phase 1: Scan heap and collect all key-value pairs */
@@ -109,7 +120,7 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
     while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL) {
         int heapAttrNum;
-        int32 key_val;
+        int64 key_val;
         uint64 compressed_tid;
         BlockNumber blk;
         OffsetNumber off;
@@ -117,12 +128,12 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
         /* Check capacity and expand if needed */
         if (ntuples >= capacity) {
             capacity *= 2;
-            bulk_keys = (int32 *) repalloc(bulk_keys, sizeof(int32) * capacity);
+            bulk_keys = (int64 *) repalloc(bulk_keys, sizeof(int64) * capacity);
             bulk_values = (uint64 *) repalloc(bulk_values, sizeof(uint64) * capacity);
             elog(LOG, "Expanded capacity to %d", capacity);
         }
 
-        /* Extract index key value (assuming single int32 column for now) */
+        /* Extract index key value */
         heapAttrNum = indexInfo->ii_IndexAttrNumbers[0];
         values[0] = heap_getattr(heapTuple, heapAttrNum, heapTupDesc, &isnull[0]);
 
@@ -131,8 +142,12 @@ nrindex_build(Relation heap, Relation index, IndexInfo *indexInfo)
             continue;
         }
 
-        /* Get int32 key value */
-        key_val = DatumGetInt32(values[0]);
+        /* Get key value (INT or BIGINT) */
+        if (is_bigint) {
+            key_val = DatumGetInt64(values[0]);
+        } else {
+            key_val = (int64)DatumGetInt32(values[0]);
+        }
 
         /* Compress heap_tid to uint64: high 32 bits = block, low 16 bits = offset */
         blk = ItemPointerGetBlockNumber(&heapTuple->t_self);
