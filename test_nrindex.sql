@@ -26,7 +26,7 @@ DEFAULT FOR TYPE int4 USING nrindex AS
 CREATE TABLE test_idx (
     id   INT,
     val  INT
-) USING nram;
+) USING;
 
 INSERT INTO test_idx VALUES (1, 100);
 INSERT INTO test_idx VALUES (2, 200);
@@ -89,3 +89,23 @@ SELECT * FROM test_idx WHERE val = 500;
   SELECT * FROM test_idx WHERE val > 900;
   -- 测试小于查询 (min_key=NULL, max_key=50)
   SELECT * FROM test_idx WHERE val < 50;
+
+
+  -- 1. 创建表 (val 使用 BIGINT)
+  DROP TABLE IF EXISTS covid;
+  CREATE TABLE covid (
+      id INT,
+      val BIGINT
+  ) USING;
+
+  -- 2. 导入 CSV 数据
+  \copy covid FROM '/tmp/covid_1m.csv' CSV HEADER;
+
+  -- 3. 验证数据
+  SELECT COUNT(*) FROM covid;
+  SELECT * FROM covid LIMIT 5;
+
+  -- 4. 创建 SELIX 索引
+  DROP INDEX IF EXISTS idx_covid_val;
+  CREATE INDEX idx_covid_val ON covid USING nrindex(val);
+  

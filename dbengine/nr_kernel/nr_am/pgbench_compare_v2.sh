@@ -1,44 +1,42 @@
 #!/bin/bash
 # =============================================
 # pgbench 对比测试: NRINDEX vs BTREE
-# 使用 RL 训练数据文件
 # =============================================
-# Usage: ./pgbench_compare_v2.sh [query_limit]
-# Example: ./pgbench_compare_v2.sh 10000
+# Usage: ./pgbench_compare_v2.sh [query_limit] [threads] [transactions]
+# Example:
+#   ./pgbench_compare_v2.sh 10000          # 单线程，10000条查询
+#   ./pgbench_compare_v2.sh 10000 4        # 4线程并发
+#   ./pgbench_compare_v2.sh 10000 4 10     # 4线程，每线程10个事务
 #
 # 数据来源:
 #   主表数据: /hdd9/benjamin/LearnedIndexSelfDesign/src/drl/covid_bulk_load_keys.csv (10M)
-#   查询键:   /hdd9/benjamin/LearnedIndexSelfDesign/src/drl/covid_read_keys.csv (500K)
 
 # RL 训练数据文件路径
 BULK_LOAD_CSV="/hdd9/benjamin/LearnedIndexSelfDesign/src/drl/covid_bulk_load_keys.csv"
 READ_KEYS_CSV="/hdd9/benjamin/LearnedIndexSelfDesign/src/drl/covid_read_keys.csv"
 RESULT_CSV="/tmp/benchmark_results_v2.csv"
 
-# 查询数量限制 (默认 100000，因为 pgbench 有网络开销)
-QUERY_LIMIT=${1:-100000}
+# 参数解析
+QUERY_LIMIT=${1:-10000}      # 查询数量 (默认 10000)
+THREADS=${2:-1}               # 并发线程数 (默认 1)
+TRANSACTIONS=${3:-1}          # 每线程事务数 (默认 1)
 
 PSQL="/code/neurdb-dev/psql/bin/psql -h 127.0.0.1 -d neurdb"
 PGBENCH="/code/neurdb-dev/psql/bin/pgbench -h 127.0.0.1 -d neurdb"
 ROUNDS=3
 
-# 检查数据文件
-if [ ! -f "$BULK_LOAD_CSV" ]; then
-    echo "错误: 主数据文件不存在: $BULK_LOAD_CSV"
-    exit 1
-fi
-
-if [ ! -f "$READ_KEYS_CSV" ]; then
-    echo "错误: 查询键文件不存在: $READ_KEYS_CSV"
-    exit 1
-fi
+# 检查数据文件 (仅在需要导入数据时使用)
+# if [ ! -f "$BULK_LOAD_CSV" ]; then
+#     echo "错误: 主数据文件不存在: $BULK_LOAD_CSV"
+#     exit 1
+# fi
 
 echo "=============================================="
-echo "NRINDEX vs BTREE 性能对比测试 (RL 训练数据)"
+echo "NRINDEX vs BTREE 性能对比测试 (pgbench)"
 echo "=============================================="
-echo "主数据文件: $BULK_LOAD_CSV"
-echo "查询键文件: $READ_KEYS_CSV"
-echo "查询数量限制: $QUERY_LIMIT"
+echo "查询数量: $QUERY_LIMIT"
+echo "并发线程: $THREADS"
+echo "每线程事务数: $TRANSACTIONS"
 echo "测试轮数: $ROUNDS"
 echo "=============================================="
 
@@ -56,14 +54,14 @@ tail -n +2 "$BULK_LOAD_CSV" | awk '{printf "%d,%s\n", NR, $0}' >> "$TEMP_DATA_CS
 DATA_COUNT=$(($(wc -l < "$TEMP_DATA_CSV") - 1))
 echo "数据行数: $DATA_COUNT"
 
-# 导入数据到 PostgreSQL
-echo "导入数据到 PostgreSQL..."
-$PSQL << EOF
-DROP TABLE IF EXISTS covid CASCADE;
-CREATE TABLE covid (id INT PRIMARY KEY, val BIGINT);
-\copy covid FROM '$TEMP_DATA_CSV' CSV HEADER;
-SELECT COUNT(*) AS row_count FROM covid;
-EOF
+# # 导入数据到 PostgreSQL
+# echo "导入数据到 PostgreSQL..."
+# $PSQL << EOF
+# DROP TABLE IF EXISTS covid CASCADE;
+# CREATE TABLE covid (id INT PRIMARY KEY, val BIGINT);
+# \copy covid FROM '$TEMP_DATA_CSV' CSV HEADER;
+# SELECT COUNT(*) AS row_count FROM covid;
+# EOF
 
 echo "数据导入完成"
 
@@ -80,13 +78,17 @@ SET enable_seqscan = off;
 SET max_parallel_workers_per_gather = 0;
 EOF
 
-# 从查询键文件提取 val 值生成查询 (限制数量)
-tail -n +2 "$READ_KEYS_CSV" | head -n $QUERY_LIMIT | while read val; do
-    echo "SELECT * FROM covid WHERE val = $val;"
+# 从数据库中随机抽取 QUERY_LIMIT 个 val 值作为查询键
+echo "从 covid 表中随机抽取 $QUERY_LIMIT 个键..."
+$PSQL -t -A -c "SELECT val FROM covid ORDER BY RANDOM() LIMIT $QUERY_LIMIT;" 2>/dev/null | while read val; do
+    if [ -n "$val" ]; then
+        echo "SELECT * FROM covid WHERE val = $val;"
+    fi
 done >> "$QUERY_SQL"
 
 QUERY_COUNT=$(($(wc -l < "$QUERY_SQL") - 2))
 echo "生成完成: $QUERY_COUNT 条查询"
+
 
 # ============================================
 # Step 3: 清理旧索引
@@ -128,17 +130,20 @@ run_benchmark() {
     echo ""
     echo "运行 $ROUNDS 轮 pgbench 测试..."
 
+    # 总查询数 = 每事务查询数 * 线程数 * 每线程事务数
+    total_queries=$((QUERY_COUNT * THREADS * TRANSACTIONS))
+
     for ((i=1; i<=ROUNDS; i++)); do
-        echo "--- 第 $i 轮 ---"
+        echo "--- 第 $i 轮 (${THREADS}线程 x ${TRANSACTIONS}事务) ---"
 
         round_start=$(date +%s%3N)
-        result=$($PGBENCH -n -f "$QUERY_SQL" -c 1 -t 1 2>/dev/null)
+        result=$($PGBENCH -n -f "$QUERY_SQL" -c $THREADS -t $TRANSACTIONS 2>/dev/null)
         round_end=$(date +%s%3N)
 
         round_time_ms=$((round_end - round_start))
-        throughput=$(awk "BEGIN {printf \"%.2f\", $QUERY_COUNT / ($round_time_ms / 1000.0)}")
+        throughput=$(awk "BEGIN {printf \"%.2f\", $total_queries / ($round_time_ms / 1000.0)}")
 
-        echo "耗时: ${round_time_ms}ms, 吞吐量: ${throughput} QPS"
+        echo "耗时: ${round_time_ms}ms, 总查询: ${total_queries}, 吞吐量: ${throughput} QPS"
 
         # 保存每轮结果
         echo "$index_type,$i,$create_time_ms,$round_time_ms,$throughput" >> "$RESULT_CSV"

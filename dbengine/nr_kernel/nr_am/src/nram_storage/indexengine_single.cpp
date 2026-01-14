@@ -1,14 +1,6 @@
 /* -------------------------------------------------------------------------
- * indexengine_concurrent.cpp
- * Learned index storage engine using concurrent ALEX (alexol)
- *
- * 支持多线程并发访问的版本
- *
- * 切换方式:
- *   使用并发版本: 在 Makefile 中将 indexengine.cpp 替换为 indexengine_concurrent.cpp
- *   或者重命名文件:
- *     mv indexengine.cpp indexengine_single.cpp
- *     mv indexengine_concurrent.cpp indexengine.cpp
+ * indexengine.cpp
+ * Learned index storage engine using SELIX
  * -------------------------------------------------------------------------
  */
 
@@ -20,24 +12,12 @@ extern "C" {
 #include "storage/itemptr.h"
 }
 
-// 保存并取消 PostgreSQL 的 LOG 定义，避免与 alexol 冲突
-#ifdef LOG
-#undef LOG
-#endif
-
-// 使用并发版本的 ALEX (alexol)
-#include "ALEX_CUR/alexol/src/alex.h"
-
-// 取消 alexol 的 LOG 定义，恢复 PostgreSQL 的 LOG (值为 15)
-#ifdef LOG
-#undef LOG
-#endif
-#define LOG 15
+#include "ALEX/src/core/alex.h"
+#include "ALEX/alex_config.h"
 #include <map>
 #include <vector>
 #include <algorithm>
 #include <cstdlib>
-#include <mutex>
 
 /* -------------------------------------------------------------------------
  * Key encoding/decoding (supports both INT and BIGINT)
@@ -100,44 +80,55 @@ static inline void decompress_heap_tid(uint64_t compressed, ItemPointer tid) {
 }
 
 /* -------------------------------------------------------------------------
- * Concurrent ALEX Index Engine (using alexol)
+ * ALEX Index Engine
  * -------------------------------------------------------------------------
  */
-class ALEXConcurrentIndexEngine {
+class ALEXIndexEngine {
 private:
-    // 使用 alexol 命名空间的并发安全 ALEX
-    std::map<Oid, alexol::Alex<int64_t, uint64_t>*> indexes;
-    std::mutex index_map_mutex;  // 保护 indexes map 的互斥锁
-
-    // 配置参数
-    int max_node_size = 1 << 24;      // 16MB default
-    int max_data_node_size = 1 << 19; // 512KB default
+    std::map<Oid, alex::Alex<int64_t, uint64_t>*> indexes;
+    alex::ALEXConfig config;
 
 public:
-    ALEXConcurrentIndexEngine() {
-        elog(LOG, "ALEX Concurrent IndexEngine initialized (using alexol with TBB)");
-        elog(LOG, "ALEX config: max_model_node=%dMB, max_data_node=%dKB",
-             max_node_size >> 20, max_data_node_size >> 10);
+    ALEXIndexEngine() {
+        // 从配置文件加载
+        const char* path = "/code/neurdb-dev/dbengine/nr_kernel/nr_am/src/nram_storage/ALEX/alex_config.conf";
+
+        if (!alex::ALEXConfigManager::instance().load_from_file(path)) {
+            elog(ERROR, "ALEX IndexEngine: failed to load config from %s", path);
+        }
+
+        config = alex::ALEXConfigManager::instance().config();
+        elog(LOG, "ALEX IndexEngine: loaded config from %s", path);
+
+        // 应用成本模型权重
+        alex::kExpSearchIterationsWeight = config.exp_search_iterations_weight;
+        alex::kShiftsWeight = config.shifts_weight;
+        alex::kNodeLookupsWeight = config.node_lookups_weight;
+        alex::kModelSizeWeight = config.model_size_weight;
+
+        elog(LOG, "ALEX config: node=%dMB, density=(%.2f,%.2f,%.2f)",
+             config.max_node_size >> 20,
+             config.init_density, config.max_density, config.min_density);
     }
 
-    ~ALEXConcurrentIndexEngine() {
-        std::lock_guard<std::mutex> lock(index_map_mutex);
+    ~ALEXIndexEngine() {
         for (auto& pair : indexes) {
             delete pair.second;
         }
         indexes.clear();
     }
 
-    alexol::Alex<int64_t, uint64_t>* getIndex(Oid indexOid) {
-        std::lock_guard<std::mutex> lock(index_map_mutex);
-
+    alex::Alex<int64_t, uint64_t>* getIndex(Oid indexOid) {
         auto it = indexes.find(indexOid);
         if (it == indexes.end()) {
-            alexol::Alex<int64_t, uint64_t>* idx = new alexol::Alex<int64_t, uint64_t>();
+            alex::Alex<int64_t, uint64_t>* idx = new alex::Alex<int64_t, uint64_t>();
 
-            // 设置节点大小参数
-            idx->set_max_model_node_size(max_node_size);
-            idx->set_max_data_node_size(max_data_node_size);
+            // 应用配置
+            idx->set_expected_insert_frac(config.expected_insert_frac);
+            idx->set_max_node_size(config.max_node_size);
+            idx->set_approximate_model_computation(config.approximate_model);
+            idx->set_approximate_cost_computation(config.approximate_cost);
+            idx->set_density_params(config.init_density, config.max_density, config.min_density);
 
             indexes[indexOid] = idx;
             return idx;
@@ -146,33 +137,36 @@ public:
     }
 
     void put(Oid indexOid, int64_t val, uint64_t tid) {
-        alexol::Alex<int64_t, uint64_t>* idx = getIndex(indexOid);
+        alex::Alex<int64_t, uint64_t>* idx = getIndex(indexOid);
         int64_t key = (int64_t)encode_key_64(val);
-        // alexol::insert 是线程安全的
         idx->insert(key, tid);
     }
 
     bool get(Oid indexOid, int64_t val, uint64_t* tid) {
-        alexol::Alex<int64_t, uint64_t>* idx;
-        {
-            std::lock_guard<std::mutex> lock(index_map_mutex);
-            auto it = indexes.find(indexOid);
-            if (it == indexes.end()) return false;
-            idx = it->second;
-        }
+        auto it = indexes.find(indexOid);
+        if (it == indexes.end()) return false;
 
+        alex::Alex<int64_t, uint64_t>* idx = it->second;
         int64_t key = (int64_t)encode_key_64(val);
-        // alexol::get_payload 是线程安全的
-        return idx->get_payload(key, tid);
+        auto iter = idx->find(key);
+        if (!iter.is_end()) {
+            *tid = iter.payload();
+            return true;
+        }
+        return false;
     }
 
     bool exists(Oid indexOid, int64_t val) {
-        uint64_t dummy;
-        return get(indexOid, val, &dummy);
+        auto it = indexes.find(indexOid);
+        if (it == indexes.end()) return false;
+
+        alex::Alex<int64_t, uint64_t>* idx = it->second;
+        int64_t key = (int64_t)encode_key_64(val);
+        auto iter = idx->find(key);
+        return !iter.is_end();
     }
 
     size_t getCount(Oid indexOid) {
-        std::lock_guard<std::mutex> lock(index_map_mutex);
         auto it = indexes.find(indexOid);
         if (it == indexes.end()) return 0;
         return it->second->get_stats().num_keys;
@@ -196,11 +190,11 @@ public:
                                 [](const KVPair& a, const KVPair& b) { return a.first == b.first; });
         pairs.erase(last, pairs.end());
 
-        alexol::Alex<int64_t, uint64_t>* idx = getIndex(indexOid);
+        alex::Alex<int64_t, uint64_t>* idx = getIndex(indexOid);
         idx->bulk_load(pairs.data(), pairs.size());
 
         auto stats = idx->get_stats();
-        elog(LOG, "ALEX(concurrent): bulkLoad completed, indexOid=%u, count=%zu, data_nodes=%d, model_nodes=%d",
+        elog(LOG, "ALEX: bulkLoad completed, indexOid=%u, count=%zu, data_nodes=%d, model_nodes=%d",
              indexOid, pairs.size(), stats.num_data_nodes, stats.num_model_nodes);
     }
 };
@@ -214,16 +208,16 @@ extern "C" {
 
 IndexEngine* indexengine_open(void) {
     try {
-        return reinterpret_cast<IndexEngine*>(new ALEXConcurrentIndexEngine());
+        return reinterpret_cast<IndexEngine*>(new ALEXIndexEngine());
     } catch (const std::exception& e) {
-        elog(ERROR, "Failed to create Concurrent IndexEngine: %s", e.what());
+        elog(ERROR, "Failed to create IndexEngine: %s", e.what());
         return nullptr;
     }
 }
 
 void indexengine_close(IndexEngine* engine) {
     if (engine) {
-        delete reinterpret_cast<ALEXConcurrentIndexEngine*>(engine);
+        delete reinterpret_cast<ALEXIndexEngine*>(engine);
     }
 }
 
@@ -231,7 +225,7 @@ void indexengine_put(IndexEngine* engine, NRIndexKey ikey, NRIndexValue ivalue) 
     if (!engine) return;
 
     try {
-        ALEXConcurrentIndexEngine* impl = reinterpret_cast<ALEXConcurrentIndexEngine*>(engine);
+        ALEXIndexEngine* impl = reinterpret_cast<ALEXIndexEngine*>(engine);
         Oid indexOid = ikey->indexOid;
         int64_t val = extract_int_from_key(ikey);
         uint64_t compressed_tid = compress_heap_tid(&ivalue->heap_tid);
@@ -245,7 +239,7 @@ NRIndexValue indexengine_get(IndexEngine* engine, NRIndexKey ikey) {
     if (!engine) return nullptr;
 
     try {
-        ALEXConcurrentIndexEngine* impl = reinterpret_cast<ALEXConcurrentIndexEngine*>(engine);
+        ALEXIndexEngine* impl = reinterpret_cast<ALEXIndexEngine*>(engine);
         Oid indexOid = ikey->indexOid;
         int64_t val = extract_int_from_key(ikey);
 
@@ -286,7 +280,7 @@ void indexengine_range_scan(IndexEngine* engine,
         memcmp(start_key->key_data, end_key->key_data, start_key->key_size) == 0) {
 
         try {
-            ALEXConcurrentIndexEngine* impl = reinterpret_cast<ALEXConcurrentIndexEngine*>(engine);
+            ALEXIndexEngine* impl = reinterpret_cast<ALEXIndexEngine*>(engine);
             Oid indexOid = start_key->indexOid;
             int64_t val = extract_int_from_key(start_key);
 
@@ -314,7 +308,7 @@ bool indexengine_exists(IndexEngine* engine, NRIndexKey ikey) {
     if (!engine) return false;
 
     try {
-        ALEXConcurrentIndexEngine* impl = reinterpret_cast<ALEXConcurrentIndexEngine*>(engine);
+        ALEXIndexEngine* impl = reinterpret_cast<ALEXIndexEngine*>(engine);
         return impl->exists(ikey->indexOid, extract_int_from_key(ikey));
     } catch (const std::exception& e) {
         elog(ERROR, "IndexEngine exists failed: %s", e.what());
@@ -330,7 +324,7 @@ uint64_t indexengine_get_count(IndexEngine* engine, Oid indexOid) {
     if (!engine) return 0;
 
     try {
-        ALEXConcurrentIndexEngine* impl = reinterpret_cast<ALEXConcurrentIndexEngine*>(engine);
+        ALEXIndexEngine* impl = reinterpret_cast<ALEXIndexEngine*>(engine);
         return impl->getCount(indexOid);
     } catch (const std::exception& e) {
         elog(ERROR, "IndexEngine get_count failed: %s", e.what());
@@ -350,7 +344,7 @@ void indexengine_bulk_load(IndexEngine* engine,
     if (!engine) return;
 
     try {
-        ALEXConcurrentIndexEngine* impl = reinterpret_cast<ALEXConcurrentIndexEngine*>(engine);
+        ALEXIndexEngine* impl = reinterpret_cast<ALEXIndexEngine*>(engine);
         impl->bulkLoad(indexOid, keys, values, count);
     } catch (const std::exception& e) {
         elog(ERROR, "IndexEngine bulk_load failed: %s", e.what());

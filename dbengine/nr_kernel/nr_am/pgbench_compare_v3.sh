@@ -85,15 +85,11 @@ echo "=============================================="
 # ============================================
 # Step 1: 重启数据库，确保干净状态
 # ============================================
-echo ""
-echo "Step 1: 重启数据库确保干净状态..."
 restart_db
 
 # ============================================
 # Step 2: 准备主数据表 (如果不存在)
 # ============================================
-echo ""
-echo "Step 2: 准备主数据表..."
 
 # 检查表是否存在
 TABLE_EXISTS=$($PSQL -t -A -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'covid';")
@@ -122,8 +118,6 @@ fi
 # ============================================
 # Step 3: 准备查询键表 (如果不存在)
 # ============================================
-echo ""
-echo "Step 3: 准备查询键表..."
 
 # 检查表是否存在
 KEYS_TABLE_EXISTS=$($PSQL -t -A -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'query_keys';")
@@ -156,11 +150,11 @@ fi
 # ============================================
 # Step 4: 清理旧索引
 # ============================================
-echo ""
-echo "Step 4: 清理旧索引..."
+# echo ""
+# echo "Step 4: 清理旧索引..."
 $PSQL -c "DROP INDEX IF EXISTS idx_covid_nrindex;" 2>/dev/null
 $PSQL -c "DROP INDEX IF EXISTS idx_covid_btree;" 2>/dev/null
-echo "清理完成"
+# echo "清理完成"
 
 # 初始化结果文件
 echo "index_type,round,create_time_ms,query_time_ms,throughput_qps" > "$RESULT_CSV"
