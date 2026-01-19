@@ -28,3 +28,12 @@ dbengine/nr_kernel/nr_am/results/*
 dbengine/nr_kernel/nr_am/optimizer/bo-all
 dbengine/nr_kernel/nr_am/optimizer/bo-steps
 dbengine/nr_kernel/nr_am/optimizer/__pycache__
+*.csv
+
+# Large files
+logfile
+test_log
+books_40m.csv
+data/
+*.csv
+.nfs*

@@ -31,7 +31,7 @@ PG_CPPFLAGS += -I/usr/local/include -I./src/
 # C++ flags for indexengine (map-based, no RocksDB needed)
 PG_CXXFLAGS += -std=c++17 -march=native -I./src/
 # Link RocksDB for table storage and C++ standard library for indexengine
-SHLIB_LINK += -L/usr/local/lib -lrocksdb -lstdc++ -Wl,-rpath,/usr/local/lib
+SHLIB_LINK += -L/usr/local/lib -lrocksdb -lstdc++ -ltbb -Wl,-rpath,/usr/local/lib
 
 REGRESS = clean init unit_tests table_scan index_scan xact_basic
 

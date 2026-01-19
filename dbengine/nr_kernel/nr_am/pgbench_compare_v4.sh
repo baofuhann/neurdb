@@ -1,18 +1,88 @@
 #!/bin/bash
 # =============================================
 # SQL 对比测试: NRINDEX vs BTREE
-# 使用单点查询，更准确测量索引性能
+# 支持5种工作负载的性能测试
 # =============================================
-# Usage: ./pgbench_compare_v4.sh [query_limit]
-# Example: ./pgbench_compare_v4.sh 500000
+# Usage: ./pgbench_compare_v4.sh <workload> [operation_count]
+#
+# Workloads:
+#   read_only   - 100% 查询
+#   read_heavy  - 80% 查询, 20% 插入
+#   balanced    - 50% 查询, 50% 插入
+#   write_heavy - 20% 查询, 80% 插入
+#   write_only  - 100% 插入
+#
+# Examples:
+#   ./pgbench_compare_v4.sh read_only
+#   ./pgbench_compare_v4.sh read_heavy 100000
+#   ./pgbench_compare_v4.sh balanced 50000
 
-# RL 训练数据文件路径
+# ============================================
+# 参数解析
+# ============================================
+WORKLOAD=${1:-""}
+OPERATION_COUNT=${2:-50000}
+
+# 工作负载定义 (查询比例, 插入比例)
+declare -A WORKLOAD_READ_PCT
+declare -A WORKLOAD_WRITE_PCT
+declare -A WORKLOAD_DESC
+
+WORKLOAD_READ_PCT["read_only"]=100
+WORKLOAD_WRITE_PCT["read_only"]=0
+WORKLOAD_DESC["read_only"]="100% 查询"
+
+WORKLOAD_READ_PCT["read_heavy"]=80
+WORKLOAD_WRITE_PCT["read_heavy"]=20
+WORKLOAD_DESC["read_heavy"]="80% 查询, 20% 插入"
+
+WORKLOAD_READ_PCT["balanced"]=50
+WORKLOAD_WRITE_PCT["balanced"]=50
+WORKLOAD_DESC["balanced"]="50% 查询, 50% 插入"
+
+WORKLOAD_READ_PCT["write_heavy"]=20
+WORKLOAD_WRITE_PCT["write_heavy"]=80
+WORKLOAD_DESC["write_heavy"]="20% 查询, 80% 插入"
+
+WORKLOAD_READ_PCT["write_only"]=0
+WORKLOAD_WRITE_PCT["write_only"]=100
+WORKLOAD_DESC["write_only"]="100% 插入"
+
+# 检查工作负载参数
+if [ -z "$WORKLOAD" ] || [ -z "${WORKLOAD_DESC[$WORKLOAD]}" ]; then
+    echo "=============================================="
+    echo "NRINDEX vs BTREE 性能对比测试"
+    echo "=============================================="
+    echo ""
+    echo "Usage: $0 <workload> [operation_count]"
+    echo ""
+    echo "Available workloads:"
+    echo "  read_only   - 100% 查询"
+    echo "  read_heavy  - 80% 查询, 20% 插入"
+    echo "  balanced    - 50% 查询, 50% 插入"
+    echo "  write_heavy - 20% 查询, 80% 插入"
+    echo "  write_only  - 100% 插入"
+    echo ""
+    echo "Examples:"
+    echo "  $0 read_only"
+    echo "  $0 read_heavy 100000"
+    echo "  $0 balanced 50000"
+    exit 1
+fi
+
+# 计算读写操作数量
+READ_PCT=${WORKLOAD_READ_PCT[$WORKLOAD]}
+WRITE_PCT=${WORKLOAD_WRITE_PCT[$WORKLOAD]}
+READ_COUNT=$((OPERATION_COUNT * READ_PCT / 100))
+WRITE_COUNT=$((OPERATION_COUNT * WRITE_PCT / 100))
+
+# ============================================
+# 配置
+# ============================================
 BULK_LOAD_CSV="/hdd9/benjamin/LearnedIndexSelfDesign/src/drl/covid_bulk_load_keys.csv"
 READ_KEYS_CSV="/hdd9/benjamin/LearnedIndexSelfDesign/src/drl/covid_read_keys.csv"
-RESULT_CSV="/tmp/benchmark_results_v4.csv"
-
-# 查询数量限制 (0 表示不限制)
-QUERY_LIMIT=${1:-0}
+INSERT_KEYS_CSV="/hdd9/benjamin/LearnedIndexSelfDesign/src/drl/covid_insert_keys.csv"
+RESULT_CSV="/tmp/benchmark_${WORKLOAD}.csv"
 
 PSQL="/code/neurdb-dev/psql/bin/psql -h 127.0.0.1 -d neurdb"
 PG_CTL="/code/neurdb-dev/psql/bin/pg_ctl"
@@ -23,7 +93,6 @@ ROUNDS=3
 # ============================================
 # 辅助函数
 # ============================================
-
 restart_db() {
     echo "重启数据库清理缓存..."
     $PG_CTL -D "$PG_DATA" -l "$PG_LOG" restart -w -t 60 > /dev/null 2>&1
@@ -31,46 +100,56 @@ restart_db() {
     echo "数据库已重启"
 }
 
+# ============================================
 # 检查数据文件
+# ============================================
 if [ ! -f "$BULK_LOAD_CSV" ]; then
     echo "错误: 主数据文件不存在: $BULK_LOAD_CSV"
     exit 1
 fi
 
-if [ ! -f "$READ_KEYS_CSV" ]; then
+if [ "$READ_COUNT" -gt 0 ] && [ ! -f "$READ_KEYS_CSV" ]; then
     echo "错误: 查询键文件不存在: $READ_KEYS_CSV"
     exit 1
 fi
 
-echo "=============================================="
-echo "NRINDEX vs BTREE 性能对比测试 (单点查询)"
-echo "=============================================="
-echo "主数据文件: $BULK_LOAD_CSV"
-echo "查询键文件: $READ_KEYS_CSV"
-if [ "$QUERY_LIMIT" -eq 0 ]; then
-    echo "查询数量限制: 无限制 (使用全部)"
-else
-    echo "查询数量限制: $QUERY_LIMIT"
+if [ "$WRITE_COUNT" -gt 0 ] && [ ! -f "$INSERT_KEYS_CSV" ]; then
+    echo "警告: 插入键文件不存在: $INSERT_KEYS_CSV"
+    echo "将使用查询键文件作为插入键"
+    INSERT_KEYS_CSV="$READ_KEYS_CSV"
 fi
+
+# ============================================
+# 显示测试信息
+# ============================================
+echo "=============================================="
+echo "NRINDEX vs BTREE 性能对比测试"
+echo "=============================================="
+echo "工作负载: $WORKLOAD (${WORKLOAD_DESC[$WORKLOAD]})"
+echo "总操作数: $OPERATION_COUNT"
+echo "  - 查询操作: $READ_COUNT (${READ_PCT}%)"
+echo "  - 插入操作: $WRITE_COUNT (${WRITE_PCT}%)"
 echo "测试轮数: $ROUNDS"
 echo "=============================================="
 
 # ============================================
-# Step 1: 重启数据库，确保干净状态
+# Step 1: 重启数据库
 # ============================================
 echo ""
 echo "Step 1: 重启数据库确保干净状态..."
 restart_db
 
 # ============================================
-# Step 2: 准备主数据表 (如果不存在)
+# Step 2: 准备主数据表 (covid 和 covid_btree)
 # ============================================
 echo ""
 echo "Step 2: 准备主数据表..."
 
-TABLE_EXISTS=$($PSQL -t -A -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'covid';")
+# 检查 covid 表
+COVID_EXISTS=$($PSQL -t -A -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'covid';")
+BTREE_EXISTS=$($PSQL -t -A -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'covid_btree';")
 
-if [ "$TABLE_EXISTS" -eq 0 ]; then
+if [ "$COVID_EXISTS" -eq 0 ] || [ "$BTREE_EXISTS" -eq 0 ]; then
     TEMP_DATA_CSV="/tmp/covid_rl_data.csv"
     echo "生成带 id 列的数据文件..."
     echo "id,val" > "$TEMP_DATA_CSV"
@@ -78,113 +157,257 @@ if [ "$TABLE_EXISTS" -eq 0 ]; then
     DATA_COUNT=$(($(wc -l < "$TEMP_DATA_CSV") - 1))
     echo "数据行数: $DATA_COUNT"
 
-    echo "导入数据到 PostgreSQL..."
+    echo "创建并导入数据到 covid 表..."
     $PSQL << EOF
+DROP TABLE IF EXISTS covid CASCADE;
 CREATE TABLE covid (id INT PRIMARY KEY, val BIGINT);
 \copy covid FROM '$TEMP_DATA_CSV' CSV HEADER;
-SELECT COUNT(*) AS row_count FROM covid;
+SELECT 'covid' as tbl, COUNT(*) AS cnt FROM covid;
 EOF
+
+    echo "创建并导入数据到 covid_btree 表..."
+    $PSQL << EOF
+DROP TABLE IF EXISTS covid_btree CASCADE;
+CREATE TABLE covid_btree (id INT PRIMARY KEY, val BIGINT);
+\copy covid_btree FROM '$TEMP_DATA_CSV' CSV HEADER;
+SELECT 'covid_btree' as tbl, COUNT(*) AS cnt FROM covid_btree;
+EOF
+
     rm -f "$TEMP_DATA_CSV"
     echo "数据导入完成"
 else
     DATA_COUNT=$($PSQL -t -A -c "SELECT COUNT(*) FROM covid;")
-    echo "主数据表已存在，跳过创建 (行数: $DATA_COUNT)"
+    echo "数据表已存在 (covid: $DATA_COUNT 行)"
 fi
 
 # ============================================
-# Step 3: 准备查询键表 (如果不存在)
+# Step 3: 准备查询键表
 # ============================================
 echo ""
 echo "Step 3: 准备查询键表..."
 
-KEYS_TABLE_EXISTS=$($PSQL -t -A -c "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'query_keys' AND column_name = 'id';")
+$PSQL -c "DROP TABLE IF EXISTS query_keys CASCADE;" > /dev/null 2>&1
 
-if [ "$KEYS_TABLE_EXISTS" -eq 0 ]; then
-    # 删除旧表（如果存在但结构不对）
-    $PSQL -c "DROP TABLE IF EXISTS query_keys CASCADE;" > /dev/null 2>&1
-
+if [ "$READ_COUNT" -gt 0 ]; then
     TEMP_KEYS_CSV="/tmp/covid_query_keys.csv"
     echo "val" > "$TEMP_KEYS_CSV"
-    if [ "$QUERY_LIMIT" -eq 0 ]; then
-        tail -n +2 "$READ_KEYS_CSV" >> "$TEMP_KEYS_CSV"
-    else
-        tail -n +2 "$READ_KEYS_CSV" | head -n $QUERY_LIMIT >> "$TEMP_KEYS_CSV"
-    fi
-    QUERY_COUNT=$(($(wc -l < "$TEMP_KEYS_CSV") - 1))
-    echo "查询键数量: $QUERY_COUNT"
+    tail -n +2 "$READ_KEYS_CSV" | head -n $READ_COUNT >> "$TEMP_KEYS_CSV"
+    KEY_LINES=$(($(wc -l < "$TEMP_KEYS_CSV") - 1))
+    echo "准备导入 $KEY_LINES 条查询键..."
 
-    echo "导入查询键到 PostgreSQL..."
     $PSQL << EOF
 CREATE TABLE query_keys (id SERIAL PRIMARY KEY, val BIGINT);
 \copy query_keys(val) FROM '$TEMP_KEYS_CSV' CSV HEADER;
-SELECT COUNT(*) AS key_count FROM query_keys;
+SELECT COUNT(*) AS query_keys_count FROM query_keys;
 EOF
     rm -f "$TEMP_KEYS_CSV"
-    echo "查询键导入完成"
+    echo "查询键表准备完成"
 else
-    QUERY_COUNT=$($PSQL -t -A -c "SELECT COUNT(*) FROM query_keys;")
-    echo "查询键表已存在，跳过创建 (行数: $QUERY_COUNT)"
+    echo "跳过 (READ_COUNT=0)"
+    $PSQL -c "CREATE TABLE query_keys (id SERIAL PRIMARY KEY, val BIGINT);" > /dev/null 2>&1
 fi
 
 # ============================================
-# Step 4: 创建单点查询测试函数
+# Step 4: 准备插入键表
 # ============================================
 echo ""
-echo "Step 4: 创建单点查询测试函数..."
+echo "Step 4: 准备插入键表..."
+
+$PSQL -c "DROP TABLE IF EXISTS insert_keys CASCADE;" > /dev/null 2>&1
+
+if [ "$WRITE_COUNT" -gt 0 ]; then
+    TEMP_INSERT_CSV="/tmp/covid_insert_keys.csv"
+    echo "val" > "$TEMP_INSERT_CSV"
+    tail -n +2 "$INSERT_KEYS_CSV" | head -n $WRITE_COUNT >> "$TEMP_INSERT_CSV"
+    INSERT_LINES=$(($(wc -l < "$TEMP_INSERT_CSV") - 1))
+    echo "准备导入 $INSERT_LINES 条插入键..."
+
+    $PSQL << EOF
+CREATE TABLE insert_keys (id SERIAL PRIMARY KEY, val BIGINT);
+\copy insert_keys(val) FROM '$TEMP_INSERT_CSV' CSV HEADER;
+SELECT COUNT(*) AS insert_keys_count FROM insert_keys;
+EOF
+    rm -f "$TEMP_INSERT_CSV"
+    echo "插入键表准备完成"
+else
+    echo "跳过 (WRITE_COUNT=0)"
+    $PSQL -c "CREATE TABLE insert_keys (id SERIAL PRIMARY KEY, val BIGINT);" > /dev/null 2>&1
+fi
+
+# 验证数据准备
+echo ""
+echo "Step 5: 验证数据准备..."
+$PSQL -c "SELECT 'covid' as tbl, COUNT(*) as cnt FROM covid UNION ALL SELECT 'covid_btree', COUNT(*) FROM covid_btree UNION ALL SELECT 'query_keys', COUNT(*) FROM query_keys UNION ALL SELECT 'insert_keys', COUNT(*) FROM insert_keys;"
+
+# ============================================
+# Step 6: 创建测试函数
+# ============================================
+echo ""
+echo "Step 6: 创建工作负载测试函数..."
 
 $PSQL << 'EOF'
--- 删除旧函数（避免重复）
-DROP FUNCTION IF EXISTS benchmark_point_queries();
-DROP FUNCTION IF EXISTS benchmark_point_queries(INT);
+-- 删除旧函数
+DROP FUNCTION IF EXISTS benchmark_workload_nrindex(INT, INT);
+DROP FUNCTION IF EXISTS benchmark_workload_btree(INT, INT);
 
--- 创建单点查询测试函数
-CREATE OR REPLACE FUNCTION benchmark_point_queries()
-RETURNS TABLE(total_time_ms DOUBLE PRECISION, query_count BIGINT, avg_time_us DOUBLE PRECISION) AS $$
+-- 创建 NRINDEX 表的工作负载测试函数 (直接SQL，无动态开销)
+CREATE OR REPLACE FUNCTION benchmark_workload_nrindex(
+    p_read_count INT,
+    p_write_count INT
+)
+RETURNS TABLE(
+    total_time_ms DOUBLE PRECISION,
+    read_ops BIGINT,
+    write_ops BIGINT,
+    read_time_ms DOUBLE PRECISION,
+    write_time_ms DOUBLE PRECISION,
+    avg_read_us DOUBLE PRECISION,
+    avg_write_us DOUBLE PRECISION
+) AS $$
 DECLARE
     start_ts TIMESTAMP;
     end_ts TIMESTAMP;
+    read_start TIMESTAMP;
+    read_end TIMESTAMP;
+    write_start TIMESTAMP;
+    write_end TIMESTAMP;
     key_val BIGINT;
     result_row RECORD;
-    cnt BIGINT := 0;
+    read_cnt BIGINT := 0;
+    write_cnt BIGINT := 0;
+    next_id INT;
+    total_read_time DOUBLE PRECISION := 0;
+    total_write_time DOUBLE PRECISION := 0;
 BEGIN
-    -- 强制使用索引
     SET enable_seqscan = off;
     SET max_parallel_workers_per_gather = 0;
 
+    SELECT COALESCE(MAX(id), 0) + 1 INTO next_id FROM covid;
+
     start_ts := clock_timestamp();
 
-    -- 遍历查询键，执行单点查询
-    FOR key_val IN SELECT val FROM query_keys ORDER BY id LOOP
-        SELECT * INTO result_row FROM covid WHERE val = key_val LIMIT 1;
-        cnt := cnt + 1;
-    END LOOP;
+    IF p_read_count > 0 THEN
+        read_start := clock_timestamp();
+        FOR key_val IN SELECT val FROM query_keys ORDER BY id LIMIT p_read_count LOOP
+            SELECT * INTO result_row FROM covid WHERE val = key_val LIMIT 1;
+            read_cnt := read_cnt + 1;
+        END LOOP;
+        read_end := clock_timestamp();
+        total_read_time := EXTRACT(EPOCH FROM (read_end - read_start)) * 1000;
+    END IF;
+
+    IF p_write_count > 0 THEN
+        write_start := clock_timestamp();
+        FOR key_val IN SELECT val FROM insert_keys ORDER BY id LIMIT p_write_count LOOP
+            INSERT INTO covid (id, val) VALUES (next_id, key_val) ON CONFLICT (id) DO NOTHING;
+            next_id := next_id + 1;
+            write_cnt := write_cnt + 1;
+        END LOOP;
+        write_end := clock_timestamp();
+        total_write_time := EXTRACT(EPOCH FROM (write_end - write_start)) * 1000;
+    END IF;
 
     end_ts := clock_timestamp();
 
     total_time_ms := EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000;
-    query_count := cnt;
-    avg_time_us := (total_time_ms * 1000) / cnt;
+    read_ops := read_cnt;
+    write_ops := write_cnt;
+    read_time_ms := total_read_time;
+    write_time_ms := total_write_time;
+    avg_read_us := CASE WHEN read_cnt > 0 THEN (total_read_time * 1000) / read_cnt ELSE 0 END;
+    avg_write_us := CASE WHEN write_cnt > 0 THEN (total_write_time * 1000) / write_cnt ELSE 0 END;
 
     RETURN NEXT;
 END;
 $$ LANGUAGE plpgsql;
 
-SELECT 'benchmark_point_queries 函数创建成功' AS status;
+-- 创建 BTREE 表的工作负载测试函数 (使用 covid_btree 表)
+CREATE OR REPLACE FUNCTION benchmark_workload_btree(
+    p_read_count INT,
+    p_write_count INT
+)
+RETURNS TABLE(
+    total_time_ms DOUBLE PRECISION,
+    read_ops BIGINT,
+    write_ops BIGINT,
+    read_time_ms DOUBLE PRECISION,
+    write_time_ms DOUBLE PRECISION,
+    avg_read_us DOUBLE PRECISION,
+    avg_write_us DOUBLE PRECISION
+) AS $$
+DECLARE
+    start_ts TIMESTAMP;
+    end_ts TIMESTAMP;
+    read_start TIMESTAMP;
+    read_end TIMESTAMP;
+    write_start TIMESTAMP;
+    write_end TIMESTAMP;
+    key_val BIGINT;
+    result_row RECORD;
+    read_cnt BIGINT := 0;
+    write_cnt BIGINT := 0;
+    next_id INT;
+    total_read_time DOUBLE PRECISION := 0;
+    total_write_time DOUBLE PRECISION := 0;
+BEGIN
+    SET enable_seqscan = off;
+    SET max_parallel_workers_per_gather = 0;
+
+    SELECT COALESCE(MAX(id), 0) + 1 INTO next_id FROM covid_btree;
+
+    start_ts := clock_timestamp();
+
+    IF p_read_count > 0 THEN
+        read_start := clock_timestamp();
+        FOR key_val IN SELECT val FROM query_keys ORDER BY id LIMIT p_read_count LOOP
+            SELECT * INTO result_row FROM covid_btree WHERE val = key_val LIMIT 1;
+            read_cnt := read_cnt + 1;
+        END LOOP;
+        read_end := clock_timestamp();
+        total_read_time := EXTRACT(EPOCH FROM (read_end - read_start)) * 1000;
+    END IF;
+
+    IF p_write_count > 0 THEN
+        write_start := clock_timestamp();
+        FOR key_val IN SELECT val FROM insert_keys ORDER BY id LIMIT p_write_count LOOP
+            INSERT INTO covid_btree (id, val) VALUES (next_id, key_val) ON CONFLICT (id) DO NOTHING;
+            next_id := next_id + 1;
+            write_cnt := write_cnt + 1;
+        END LOOP;
+        write_end := clock_timestamp();
+        total_write_time := EXTRACT(EPOCH FROM (write_end - write_start)) * 1000;
+    END IF;
+
+    end_ts := clock_timestamp();
+
+    total_time_ms := EXTRACT(EPOCH FROM (end_ts - start_ts)) * 1000;
+    read_ops := read_cnt;
+    write_ops := write_cnt;
+    read_time_ms := total_read_time;
+    write_time_ms := total_write_time;
+    avg_read_us := CASE WHEN read_cnt > 0 THEN (total_read_time * 1000) / read_cnt ELSE 0 END;
+    avg_write_us := CASE WHEN write_cnt > 0 THEN (total_write_time * 1000) / write_cnt ELSE 0 END;
+
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT '工作负载测试函数创建成功' AS status;
 EOF
 
 echo "测试函数创建完成"
 
 # ============================================
-# Step 5: 清理旧索引
+# Step 7: 清理旧索引
 # ============================================
 echo ""
-echo "Step 5: 清理旧索引..."
+echo "Step 7: 清理旧索引..."
 $PSQL -c "DROP INDEX IF EXISTS idx_covid_nrindex;" 2>/dev/null
 $PSQL -c "DROP INDEX IF EXISTS idx_covid_btree;" 2>/dev/null
 echo "清理完成"
 
 # 初始化结果文件
-echo "index_type,round,create_time_ms,query_time_ms,query_count,avg_time_us,throughput_qps" > "$RESULT_CSV"
+echo "index_type,round,create_time_ms,total_time_ms,read_ops,write_ops,read_time_ms,write_time_ms,avg_read_us,avg_write_us,throughput_qps" > "$RESULT_CSV"
 
 # ============================================
 # 测试函数
@@ -192,18 +415,22 @@ echo "index_type,round,create_time_ms,query_time_ms,query_count,avg_time_us,thro
 run_benchmark() {
     local index_type=$1
     local create_cmd=$2
+    local func_name=$3
+    local table_name=$4
 
     echo ""
     echo "=============================================="
-    echo "Benchmark: $index_type (单点查询)"
+    echo "Benchmark: $index_type ($WORKLOAD)"
     echo "=============================================="
 
     # 重启数据库，确保干净状态
     restart_db
 
-    # 删除所有索引
-    $PSQL -c "DROP INDEX IF EXISTS idx_covid_nrindex;" 2>/dev/null
-    $PSQL -c "DROP INDEX IF EXISTS idx_covid_btree;" 2>/dev/null
+    # 删除索引
+    $PSQL -c "DROP INDEX IF EXISTS idx_${table_name};" 2>/dev/null
+
+    # 清理之前插入的数据
+    $PSQL -c "DELETE FROM $table_name WHERE id > $DATA_COUNT;" 2>/dev/null
 
     # 创建索引并计时
     echo "创建 $index_type 索引..."
@@ -215,43 +442,53 @@ run_benchmark() {
 
     # 预热
     echo "预热中..."
-    $PSQL -t -A -c "SELECT * FROM benchmark_point_queries() LIMIT 0;" > /dev/null 2>&1
-    # 执行少量查询预热
-    $PSQL -t -A << EOF > /dev/null 2>&1
-SET enable_seqscan = off;
-SELECT * FROM covid WHERE val = (SELECT val FROM query_keys LIMIT 1);
-EOF
+    $PSQL -t -A -c "SET enable_seqscan = off; SELECT * FROM $table_name WHERE val = (SELECT val FROM query_keys LIMIT 1) LIMIT 1;" > /dev/null 2>&1
     echo "预热完成"
 
     # 多轮测试
     echo ""
-    echo "运行 $ROUNDS 轮单点查询测试..."
+    echo "运行 $ROUNDS 轮 $WORKLOAD 测试..."
 
     for ((i=1; i<=ROUNDS; i++)); do
         echo "--- 第 $i 轮 ---"
 
-        # 执行单点查询测试
-        result=$($PSQL -t -A -c "SELECT * FROM benchmark_point_queries();")
+        # 清理之前插入的数据
+        $PSQL -c "DELETE FROM $table_name WHERE id > $DATA_COUNT;" > /dev/null 2>&1
 
-        # 解析结果: total_time_ms|query_count|avg_time_us
-        query_time_ms=$(echo "$result" | cut -d'|' -f1)
-        query_count=$(echo "$result" | cut -d'|' -f2)
-        avg_time_us=$(echo "$result" | cut -d'|' -f3)
+        # 执行工作负载测试
+        result=$($PSQL -t -A -c "SELECT * FROM ${func_name}($READ_COUNT, $WRITE_COUNT);")
 
-        throughput=$(awk "BEGIN {printf \"%.2f\", $query_count / ($query_time_ms / 1000.0)}")
+        # 解析结果
+        total_time_ms=$(echo "$result" | cut -d'|' -f1)
+        read_ops=$(echo "$result" | cut -d'|' -f2)
+        write_ops=$(echo "$result" | cut -d'|' -f3)
+        read_time_ms=$(echo "$result" | cut -d'|' -f4)
+        write_time_ms=$(echo "$result" | cut -d'|' -f5)
+        avg_read_us=$(echo "$result" | cut -d'|' -f6)
+        avg_write_us=$(echo "$result" | cut -d'|' -f7)
 
-        echo "总耗时: ${query_time_ms}ms, 查询数: ${query_count}, 平均: ${avg_time_us}us/查询, 吞吐量: ${throughput} QPS"
+        total_ops=$((read_ops + write_ops))
+        throughput=$(awk "BEGIN {printf \"%.2f\", $total_ops / ($total_time_ms / 1000.0)}")
+
+        echo "总耗时: ${total_time_ms}ms"
+        if [ "$read_ops" -gt 0 ]; then
+            echo "  查询: ${read_ops}次, ${read_time_ms}ms, ${avg_read_us}us/次"
+        fi
+        if [ "$write_ops" -gt 0 ]; then
+            echo "  插入: ${write_ops}次, ${write_time_ms}ms, ${avg_write_us}us/次"
+        fi
+        echo "  吞吐量: ${throughput} OPS"
 
         # 保存每轮结果
-        echo "$index_type,$i,$create_time_ms,$query_time_ms,$query_count,$avg_time_us,$throughput" >> "$RESULT_CSV"
+        echo "$index_type,$i,$create_time_ms,$total_time_ms,$read_ops,$write_ops,$read_time_ms,$write_time_ms,$avg_read_us,$avg_write_us,$throughput" >> "$RESULT_CSV"
     done
 }
 
 # ============================================
 # 运行测试
 # ============================================
-run_benchmark "NRINDEX" "CREATE INDEX idx_covid_nrindex ON covid USING nrindex(val);"
-run_benchmark "BTREE" "CREATE INDEX idx_covid_btree ON covid USING btree(val);"
+run_benchmark "NRINDEX" "CREATE INDEX idx_covid ON covid USING nrindex(val);" "benchmark_workload_nrindex" "covid"
+run_benchmark "BTREE" "CREATE INDEX idx_covid_btree ON covid_btree USING btree(val);" "benchmark_workload_btree" "covid_btree"
 
 # ============================================
 # 结果汇总
@@ -264,24 +501,26 @@ cat "$RESULT_CSV"
 
 echo ""
 echo "=============================================="
-echo "汇总统计"
+echo "汇总统计 - $WORKLOAD (${WORKLOAD_DESC[$WORKLOAD]})"
 echo "=============================================="
 
 # 计算平均值
-nrindex_avg_time=$(grep "^NRINDEX" "$RESULT_CSV" | awk -F',' '{sum+=$4; count++} END {printf "%.2f", sum/count}')
-btree_avg_time=$(grep "^BTREE" "$RESULT_CSV" | awk -F',' '{sum+=$4; count++} END {printf "%.2f", sum/count}')
-nrindex_avg_us=$(grep "^NRINDEX" "$RESULT_CSV" | awk -F',' '{sum+=$6; count++} END {printf "%.2f", sum/count}')
-btree_avg_us=$(grep "^BTREE" "$RESULT_CSV" | awk -F',' '{sum+=$6; count++} END {printf "%.2f", sum/count}')
-nrindex_avg_qps=$(grep "^NRINDEX" "$RESULT_CSV" | awk -F',' '{sum+=$7; count++} END {printf "%.2f", sum/count}')
-btree_avg_qps=$(grep "^BTREE" "$RESULT_CSV" | awk -F',' '{sum+=$7; count++} END {printf "%.2f", sum/count}')
+nrindex_avg_total=$(grep "^NRINDEX" "$RESULT_CSV" | awk -F',' '{sum+=$4; count++} END {printf "%.2f", sum/count}')
+btree_avg_total=$(grep "^BTREE" "$RESULT_CSV" | awk -F',' '{sum+=$4; count++} END {printf "%.2f", sum/count}')
+nrindex_avg_read=$(grep "^NRINDEX" "$RESULT_CSV" | awk -F',' '{sum+=$9; count++} END {printf "%.2f", sum/count}')
+btree_avg_read=$(grep "^BTREE" "$RESULT_CSV" | awk -F',' '{sum+=$9; count++} END {printf "%.2f", sum/count}')
+nrindex_avg_write=$(grep "^NRINDEX" "$RESULT_CSV" | awk -F',' '{sum+=$10; count++} END {printf "%.2f", sum/count}')
+btree_avg_write=$(grep "^BTREE" "$RESULT_CSV" | awk -F',' '{sum+=$10; count++} END {printf "%.2f", sum/count}')
+nrindex_avg_qps=$(grep "^NRINDEX" "$RESULT_CSV" | awk -F',' '{sum+=$11; count++} END {printf "%.2f", sum/count}')
+btree_avg_qps=$(grep "^BTREE" "$RESULT_CSV" | awk -F',' '{sum+=$11; count++} END {printf "%.2f", sum/count}')
 nrindex_create=$(grep "^NRINDEX" "$RESULT_CSV" | head -1 | cut -d',' -f3)
 btree_create=$(grep "^BTREE" "$RESULT_CSV" | head -1 | cut -d',' -f3)
 
 echo ""
-echo "索引类型    | 创建时间(ms) | 总耗时(ms) | 平均(us/查询) | 吞吐量(QPS)"
-echo "------------|--------------|------------|---------------|------------"
-printf "NRINDEX     | %12s | %10s | %13s | %10s\n" "$nrindex_create" "$nrindex_avg_time" "$nrindex_avg_us" "$nrindex_avg_qps"
-printf "BTREE       | %12s | %10s | %13s | %10s\n" "$btree_create" "$btree_avg_time" "$btree_avg_us" "$btree_avg_qps"
+echo "索引类型    | 创建(ms) | 总耗时(ms) | 查询(us) | 插入(us) | 吞吐量(OPS)"
+echo "------------|----------|------------|----------|----------|------------"
+printf "NRINDEX     | %8s | %10s | %8s | %8s | %10s\n" "$nrindex_create" "$nrindex_avg_total" "$nrindex_avg_read" "$nrindex_avg_write" "$nrindex_avg_qps"
+printf "BTREE       | %8s | %10s | %8s | %8s | %10s\n" "$btree_create" "$btree_avg_total" "$btree_avg_read" "$btree_avg_write" "$btree_avg_qps"
 
 echo ""
 echo "=============================================="
@@ -290,12 +529,22 @@ echo "=============================================="
 
 if [ -n "$nrindex_avg_qps" ] && [ -n "$btree_avg_qps" ]; then
     qps_ratio=$(awk "BEGIN {printf \"%.2f\", $nrindex_avg_qps / $btree_avg_qps}")
-    latency_ratio=$(awk "BEGIN {printf \"%.2f\", $nrindex_avg_us / $btree_avg_us}")
+    total_ratio=$(awk "BEGIN {printf \"%.2f\", $btree_avg_total / $nrindex_avg_total}")
     create_ratio=$(awk "BEGIN {printf \"%.2f\", $nrindex_create / $btree_create}")
 
     echo "NRINDEX/BTREE 吞吐量比值: $qps_ratio"
-    echo "NRINDEX/BTREE 延迟比值: $latency_ratio"
+    echo "BTREE/NRINDEX 总耗时比值: $total_ratio"
     echo "NRINDEX/BTREE 创建时间比值: $create_ratio"
+
+    if [ "$READ_COUNT" -gt 0 ] && [ "$nrindex_avg_read" != "0.00" ]; then
+        read_ratio=$(awk "BEGIN {printf \"%.2f\", $btree_avg_read / $nrindex_avg_read}")
+        echo "查询性能提升: ${read_ratio}x"
+    fi
+
+    if [ "$WRITE_COUNT" -gt 0 ] && [ "$nrindex_avg_write" != "0.00" ]; then
+        write_ratio=$(awk "BEGIN {printf \"%.2f\", $btree_avg_write / $nrindex_avg_write}")
+        echo "插入性能提升: ${write_ratio}x"
+    fi
 
     nrindex_better=$(awk "BEGIN {print ($nrindex_avg_qps > $btree_avg_qps) ? 1 : 0}")
     if [ "$nrindex_better" = "1" ]; then
@@ -309,11 +558,9 @@ if [ -n "$nrindex_avg_qps" ] && [ -n "$btree_avg_qps" ]; then
     fi
 fi
 
-# 清理临时文件
-rm -f "$TEMP_DATA_CSV" "$TEMP_KEYS_CSV"
-
 echo ""
 echo "=============================================="
 echo "测试完成!"
+echo "工作负载: $WORKLOAD (${WORKLOAD_DESC[$WORKLOAD]})"
 echo "结果保存在: $RESULT_CSV"
 echo "=============================================="

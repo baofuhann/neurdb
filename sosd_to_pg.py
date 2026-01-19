@@ -2,13 +2,6 @@
 """
 SOSD to PostgreSQL Data Converter
 
-Reads SOSD (Search On Sorted Data) benchmark datasets and generates
-data suitable for PostgreSQL insertion.
-
-SOSD binary format:
-- First 8 bytes: uint64 count (number of records)
-- Remaining bytes: consecutive uint32 or uint64 values
-
 Usage:
     python sosd_to_pg.py <sosd_file> [options]
 
@@ -80,11 +73,21 @@ def read_sosd_file(filepath, data_type='uint32', limit=None):
 
 
 def generate_csv(sosd_file, output_file, data_type='uint32', limit=None):
-    """Generate CSV file from SOSD data."""
+    """Generate CSV file from SOSD data, sorted by val."""
+    # 先读取所有数据
+    print("Reading all data...")
+    data = list(read_sosd_file(sosd_file, data_type, limit))
+
+    # 按 val 排序
+    print(f"Sorting {len(data):,} records by val...")
+    data.sort(key=lambda x: x[1])
+
+    # 重新分配 id（排序后按顺序编号）
+    print("Writing sorted data to CSV...")
     with open(output_file, 'w') as f:
         f.write("id,val\n")
-        for id, val in read_sosd_file(sosd_file, data_type, limit):
-            f.write(f"{id},{val}\n")
+        for new_id, (_, val) in enumerate(data, start=1):
+            f.write(f"{new_id},{val}\n")
     print(f"CSV saved to: {output_file}")
 
 
